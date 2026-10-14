@@ -38,16 +38,35 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            clang lld llvm libclang-rt-dev \
+            clang lld llvm \
             gcc-aarch64-linux-gnu \
-            bc bison flex libssl-dev python3 python3-pip \
-            git rsync cpio kmod lz4 zstd xz-utils
+            bc bison flex libssl-dev libelf-dev python3 python3-pip \
+            git rsync cpio kmem kmod lz4 zstd xz-utils || \
+          sudo apt-get install -y -qq \
+            clang lld llvm \
+            gcc-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev python3 python3-pip \
+            git rsync cpio lz4 zstd xz-utils
           echo "--- versions ---"
-          clang --version | head -2
-          ld.lld --version | head -1
-          aarch64-linux-gnu-gcc --version | head -1
-          which clang ld.lld
+          clang --version | head -2 || true
+          ld.lld --version | head -1 || true
+          aarch64-linux-gnu-gcc --version | head -1 || true
+          which clang ld.lld || true
           df -h /
+
+      - name: Resolve LLVM toolchain path
+        run: |
+          set -x
+          for d in /usr/lib/llvm-14/bin /usr/lib/llvm-15/bin /usr/lib/llvm-16/bin /usr/bin; do
+            if [ -x "$d/clang" ] && [ -x "$d/ld.lld" ]; then
+              echo "LLVM_BIN=$d" >> "$GITHUB_ENV"
+              "$d/clang" --version | head -1
+              "$d/ld.lld" --version | head -1
+              break
+            fi
+          done
+          test -n "${LLVM_BIN:-}" || { echo "::error::no clang+lld pair found"; exit 1; }
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
 
       - name: Clone base kernel
         run: |
@@ -74,7 +93,6 @@ jobs:
       - name: Sanity-check config against the tree
         working-directory: base
         run: |
-          export PATH="/usr/lib/llvm-14/bin:$PATH"
           make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- HOSTCC=gcc HOSTCXX=g++ \
                olddefconfig
@@ -87,7 +105,6 @@ jobs:
       - name: Build Image
         working-directory: base
         run: |
-          export PATH="/usr/lib/llvm-14/bin:$PATH"
           echo "start $(date -u +%H:%M:%S)"
           make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- HOSTCC=gcc HOSTCXX=g++ \
