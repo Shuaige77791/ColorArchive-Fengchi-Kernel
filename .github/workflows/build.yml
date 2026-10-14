@@ -56,17 +56,21 @@ jobs:
 
       - name: Resolve LLVM toolchain path
         run: |
-          set -x
-          for d in /usr/lib/llvm-14/bin /usr/lib/llvm-15/bin /usr/lib/llvm-16/bin /usr/bin; do
-            if [ -x "$d/clang" ] && [ -x "$d/ld.lld" ]; then
-              echo "LLVM_BIN=$d" >> "$GITHUB_ENV"
-              "$d/clang" --version | head -1
-              "$d/ld.lld" --version | head -1
-              break
-            fi
+          FOUND=""
+          for d in /usr/lib/llvm-14/bin /usr/lib/llvm-15/bin /usr/lib/llvm-16/bin /usr/lib/llvm-17/bin /usr/bin; do
+            if [ -x "$d/clang" ] && [ -x "$d/ld.lld" ]; then FOUND="$d"; break; fi
           done
-          test -n "${LLVM_BIN:-}" || { echo "::error::no clang+lld pair found"; exit 1; }
-          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          if [ -z "$FOUND" ]; then
+            echo "::error::no clang+lld pair found in any known location"
+            ls -la /usr/lib/llvm-*/bin 2>/dev/null | head -20
+            ls -la /usr/bin/ld.lld* /usr/bin/clang* 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "using LLVM from $FOUND"
+          "$FOUND/clang"   --version | head -2
+          "$FOUND/ld.lld"  --version | head -1
+          echo "LLVM_BIN=$FOUND" >> "$GITHUB_ENV"
+          echo "$FOUND"          >> "$GITHUB_PATH"
 
       - name: Clone base kernel
         run: |
