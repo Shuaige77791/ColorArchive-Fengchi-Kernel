@@ -47,7 +47,7 @@ jobs:
       - name: Apply overlay
         run: |
           bash scripts/apply_overlay.sh base overlay
-          bash scripts/apply_config.sh base patches/fengchi.config
+          bash scripts/apply_config.sh base "$PWD/patches/fengchi.config"
 
       - name: Build Image
         working-directory: base
