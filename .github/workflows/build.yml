@@ -1,0 +1,91 @@
+name: Build Fengchi Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_repo:
+        description: 'Base kernel repo'
+        default: 'OnePlusOSS/android_kernel_common_oneplus_sm8475'
+      base_branch:
+        description: 'Base branch'
+        default: 'oneplus/sm8475_b_16.0.0_ace_2'
+  push:
+    branches: [ main ]
+    paths-ignore: [ '*.img', 'SHA256SUMS.txt' ]
+
+env:
+  BASE_REPO: ${{ github.event.inputs.base_repo || 'OnePlusOSS/android_kernel_common_oneplus_sm8475' }}
+  BASE_BRANCH: ${{ github.event.inputs.base_branch || 'oneplus/sm8475_b_16.0.0_ace_2' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu bc bison flex \
+                 libssl-dev python3 git rsync cpio kmod lz4 zstd
+          df -h /
+
+      - name: Clone base kernel
+        run: |
+          echo "base = $BASE_REPO @ $BASE_BRANCH"
+          git clone --depth 1 --branch "$BASE_BRANCH" \
+              "https://github.com/$BASE_REPO.git" base
+          du -sh base
+
+      - name: Apply overlay
+        run: |
+          bash scripts/apply_overlay.sh base overlay
+          bash scripts/apply_config.sh base patches/fengchi.config
+
+      - name: Build Image
+        working-directory: base
+        run: |
+          export PATH=$ANDROID_NDK_HOME:$PATH
+          make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               HOSTCC=gcc HOSTCXX=g++ \
+               KCFLAGS=-Wno-error -j$(nproc) Image
+          ls -la arch/arm64/boot/Image
+
+      - name: Verify Image layout
+        working-directory: base
+        run: python3 ../scripts/verify_image.py arch/arm64/boot/Image
+
+      - name: Pack boot.img
+        run: |
+          python3 scripts/pack_boot.py base/arch/arm64/boot/Image ramdisk out
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fengchi-boot-images
+          path: |
+            out/*.img
+            out/*.txt
+          retention-days: 30
+
+      - name: Release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Fengchi Kernel build #${{ github.run_number }}
+          body: |
+            Base: ${{ env.BASE_REPO }} @ ${{ env.BASE_BRANCH }}
+            Commit: ${{ github.sha }}
+          files: |
+            out/*.img
+            out/*.txt
+          draft: false

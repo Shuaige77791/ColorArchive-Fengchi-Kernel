@@ -1,0 +1,29 @@
+=== Build recipe ===
+make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
+     CROSS_COMPILE=aarch64-linux-gnu- HOSTCC=gcc HOSTCXX=g++ \
+     KCFLAGS=-Wno-error -j$(nproc) Image
+
+Toolchain used locally: clang r416183c (Android 12 / LLVM 12.0.6)
+Full build: ~70 min, of which the LTO link is ~20 min.
+
+=== Acceptance check (do this before flashing!) ===
+python3 scripts/verify_image.py arch/arm64/boot/Image
+  overhang ~84 bytes            -> sane
+  overhang hundreds of KB       -> CONFIG_DEBUG_INFO is on, fix it
+
+=== Reference values ===
+working #50      : Image 39,452,756  image_size 39,452,672  overhang 84
+broken (this wip): Image 39,851,396  image_size 39,583,744  overhang 267,652
+fixed            : Image 39,518,292  image_size 39,518,208  overhang 84
+
+=== Other things learned the hard way ===
+* The tree is NOT a git repo; back up every file before editing.
+* `patch -p1` with the split diff headers (they read `diff --git b/X a/X`) applies
+  changes BACKWARDS.  Verify both directions.
+* Interrupted builds corrupt objects (`ld.lld: head.o: invalid symbol index`).
+  Always `make clean` after a killed build.
+* The OPLUS log partitions are `oplusreserve2` (256 MB), `logdump` (sde66),
+  `logfs` (sde65).  Read with:
+    adb shell su -c 'dd if=/dev/block/by-name/oplusreserve2 bs=1M count=256 \
+      | strings -n 8 | grep -E "Booting Linux|#5[0-9] SMP"'
+  If your build number never appears, the kernel died before its first printk.
