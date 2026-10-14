@@ -9,6 +9,12 @@ on:
       base_branch:
         description: 'Base branch (Ace Pro / 10T, 5.10.236)'
         default: 'oneplus/sm8475_v_15.0.0_oneplus_10t'
+      vendor_repo:
+        description: 'Vendor repo (kernel_platform build/oplus/qcom + vendor)'
+        default: 'OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8475'
+      vendor_branch:
+        description: 'Vendor branch'
+        default: 'oneplus/sm8475_v_15.0.0_oneplus_10t'
   push:
     branches: [ main ]
     paths-ignore:
@@ -19,6 +25,10 @@ on:
 env:
   BASE_REPO: ${{ github.event.inputs.base_repo || 'OnePlusOSS/android_kernel_common_oneplus_sm8475' }}
   BASE_BRANCH: ${{ github.event.inputs.base_branch || 'oneplus/sm8475_v_15.0.0_oneplus_10t' }}
+  # vendor tree: provides kernel_platform/{build,oplus,qcom} and vendor/, which
+  # common/drivers/soc/oplus/storage symlinks into
+  VENDOR_REPO: ${{ github.event.inputs.vendor_repo || 'OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8475' }}
+  VENDOR_BRANCH: ${{ github.event.inputs.vendor_branch || 'oneplus/sm8475_v_15.0.0_oneplus_10t' }}
 
 jobs:
   build:
@@ -72,30 +82,50 @@ jobs:
           echo "LLVM_BIN=$FOUND" >> "$GITHUB_ENV"
           echo "$FOUND"          >> "$GITHUB_PATH"
 
-      - name: Clone base kernel
+      - name: Assemble kernel_platform from both repos
         run: |
-          echo "base = $BASE_REPO @ $BASE_BRANCH"
+          set -eux
+          # common/ comes from the kernel repo
           git clone --depth 1 --branch "$BASE_BRANCH" \
-              "https://github.com/$BASE_REPO.git" base
-          du -sh base
-          ls base | head -20
+              "https://github.com/$BASE_REPO.git" kp/common
+          du -sh kp/common
+
+          # build/ oplus/ qcom/ + vendor/ come from the vendor repo
+          git clone --depth 1 --branch "$VENDOR_BRANCH" \
+              "https://github.com/$VENDOR_REPO.git" kp_vendor
+          for d in build oplus qcom; do
+            if [ -d "kp_vendor/kernel_platform/$d" ]; then
+              mv "kp_vendor/kernel_platform/$d" "kp/$d"
+            fi
+          done
+          if [ -d kp_vendor/vendor ]; then mv kp_vendor/vendor kp/vendor; fi
+          rm -rf kp_vendor
+          du -sh kp
+
+          echo "--- layout ---"
+          ls -la kp
+          echo "--- symlink targets resolve? ---"
+          ls -la kp/common/drivers/soc/oplus/ || true
+          test -e kp/common/drivers/soc/oplus/storage/Kconfig \
+            && echo "OK: storage/Kconfig resolves through the symlink" \
+            || echo "WARN: storage/Kconfig still missing"
 
       - name: Apply overlay
-        run: bash scripts/apply_overlay.sh base overlay
+        run: bash scripts/apply_overlay.sh kp/common overlay
 
-      - name: Apply config (writes .config, no make yet)
+      - name: Apply config (writes .config)
         run: |
-          mkdir -p base
-          cp -f config/fengchi_defconfig base/.config
-          ls -la base/.config
+          mkdir -p kp/common
+          cp -f config/fengchi_defconfig kp/common/.config
+          ls -la kp/common/.config
           echo "--- critical entries ---"
-          grep -E 'CONFIG_DEBUG_INFO=|CONFIG_SCHED_CLASS_EXT|CONFIG_HMBIRD_SCHED|CONFIG_BOEFFLA' base/.config || true
-          if grep -q '^CONFIG_DEBUG_INFO=y' base/.config; then
+          grep -E 'CONFIG_DEBUG_INFO=|CONFIG_SCHED_CLASS_EXT|CONFIG_HMBIRD_SCHED|CONFIG_BOEFFLA' kp/common/.config || true
+          if grep -q '^CONFIG_DEBUG_INFO=y' kp/common/.config; then
             echo "::error::CONFIG_DEBUG_INFO=y in the shipped defconfig"; exit 1
           fi
 
       - name: Sanity-check config against the tree
-        working-directory: base
+        working-directory: kp/common
         run: |
           make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- HOSTCC=gcc HOSTCXX=g++ \
@@ -107,7 +137,7 @@ jobs:
           fi
 
       - name: Build Image
-        working-directory: base
+        working-directory: kp/common
         run: |
           echo "start $(date -u +%H:%M:%S)"
           make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -117,10 +147,10 @@ jobs:
           ls -la arch/arm64/boot/Image
 
       - name: Verify Image layout
-        run: python3 scripts/verify_image.py base/arch/arm64/boot/Image
+        run: python3 scripts/verify_image.py kp/common/arch/arm64/boot/Image
 
       - name: Pack boot.img
-        run: python3 scripts/pack_boot.py base/arch/arm64/boot/Image . out
+        run: python3 scripts/pack_boot.py kp/common/arch/arm64/boot/Image . out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
