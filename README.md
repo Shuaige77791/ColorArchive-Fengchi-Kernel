@@ -19,7 +19,7 @@ Linux **5.10.236-ColorArchive**.
 
 ```
 OnePlusOSS/android_kernel_common_oneplus_sm8475
-  branch: oneplus/sm8475_b_16.0.0_ace_2
+  branch: oneplus/sm8475_v_15.0.0_oneplus_10t
 ```
 
 The workflow takes `base_repo` / `base_branch` as inputs so you can retarget it.
@@ -48,7 +48,7 @@ python3 scripts/verify_image.py arch/arm64/boot/Image
 ## Build locally
 
 ```bash
-git clone --depth 1 -b oneplus/sm8475_b_16.0.0_ace_2 \
+git clone --depth 1 -b oneplus/sm8475_v_15.0.0_oneplus_10t \
     https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8475.git base
 bash scripts/apply_overlay.sh base overlay
 bash scripts/apply_config.sh base patches/fengchi.config

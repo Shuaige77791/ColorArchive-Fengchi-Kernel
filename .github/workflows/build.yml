@@ -8,14 +8,14 @@ on:
         default: 'OnePlusOSS/android_kernel_common_oneplus_sm8475'
       base_branch:
         description: 'Base branch'
-        default: 'oneplus/sm8475_b_16.0.0_ace_2'
+        default: 'oneplus/sm8475_v_15.0.0_oneplus_10t'
   push:
     branches: [ main ]
     paths-ignore: [ '*.img', 'SHA256SUMS.txt' ]
 
 env:
   BASE_REPO: ${{ github.event.inputs.base_repo || 'OnePlusOSS/android_kernel_common_oneplus_sm8475' }}
-  BASE_BRANCH: ${{ github.event.inputs.base_branch || 'oneplus/sm8475_b_16.0.0_ace_2' }}
+  BASE_BRANCH: ${{ github.event.inputs.base_branch || 'oneplus/sm8475_v_15.0.0_oneplus_10t' }}
 
 jobs:
   build:
@@ -65,7 +65,7 @@ jobs:
 
       - name: Pack boot.img
         run: |
-          python3 scripts/pack_boot.py base/arch/arm64/boot/Image ramdisk out
+          python3 scripts/pack_boot.py base/arch/arm64/boot/Image . out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
