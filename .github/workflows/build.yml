@@ -7,11 +7,14 @@ on:
         description: 'Base kernel repo'
         default: 'OnePlusOSS/android_kernel_common_oneplus_sm8475'
       base_branch:
-        description: 'Base branch'
+        description: 'Base branch (Ace Pro / 10T, 5.10.236)'
         default: 'oneplus/sm8475_v_15.0.0_oneplus_10t'
   push:
     branches: [ main ]
-    paths-ignore: [ '*.img', 'SHA256SUMS.txt' ]
+    paths-ignore:
+      - '*.img'
+      - 'SHA256SUMS.txt'
+      - 'README.md'
 
 env:
   BASE_REPO: ${{ github.event.inputs.base_repo || 'OnePlusOSS/android_kernel_common_oneplus_sm8475' }}
@@ -27,14 +30,23 @@ jobs:
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+                      /usr/share/swift /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost 2>/dev/null || true
           df -h /
 
-      - name: Install toolchain
+      - name: Install toolchain (clang + lld are REQUIRED)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu bc bison flex \
-                 libssl-dev python3 git rsync cpio kmod lz4 zstd
+          sudo apt-get install -y -qq \
+            clang lld llvm libclang-rt-dev \
+            gcc-aarch64-linux-gnu \
+            bc bison flex libssl-dev python3 python3-pip \
+            git rsync cpio kmod lz4 zstd xz-utils
+          echo "--- versions ---"
+          clang --version | head -2
+          ld.lld --version | head -1
+          aarch64-linux-gnu-gcc --version | head -1
+          which clang ld.lld
           df -h /
 
       - name: Clone base kernel
@@ -43,29 +55,51 @@ jobs:
           git clone --depth 1 --branch "$BASE_BRANCH" \
               "https://github.com/$BASE_REPO.git" base
           du -sh base
+          ls base | head -20
 
       - name: Apply overlay
+        run: bash scripts/apply_overlay.sh base overlay
+
+      - name: Apply config (writes .config, no make yet)
         run: |
-          bash scripts/apply_overlay.sh base overlay
-          bash scripts/apply_config.sh base "$PWD/patches/fengchi.config"
+          mkdir -p base
+          cp -f config/fengchi_defconfig base/.config
+          ls -la base/.config
+          echo "--- critical entries ---"
+          grep -E 'CONFIG_DEBUG_INFO=|CONFIG_SCHED_CLASS_EXT|CONFIG_HMBIRD_SCHED|CONFIG_BOEFFLA' base/.config || true
+          if grep -q '^CONFIG_DEBUG_INFO=y' base/.config; then
+            echo "::error::CONFIG_DEBUG_INFO=y in the shipped defconfig"; exit 1
+          fi
+
+      - name: Sanity-check config against the tree
+        working-directory: base
+        run: |
+          export PATH="/usr/lib/llvm-14/bin:$PATH"
+          make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
+               CROSS_COMPILE=aarch64-linux-gnu- HOSTCC=gcc HOSTCXX=g++ \
+               olddefconfig
+          echo "--- after olddefconfig ---"
+          grep -E 'CONFIG_DEBUG_INFO=|CONFIG_SCHED_CLASS_EXT|CONFIG_HMBIRD_SCHED' .config || true
+          if grep -q '^CONFIG_DEBUG_INFO=y' .config; then
+            echo "::error::olddefconfig turned DEBUG_INFO back on"; exit 1
+          fi
 
       - name: Build Image
         working-directory: base
         run: |
-          export PATH=$ANDROID_NDK_HOME:$PATH
+          export PATH="/usr/lib/llvm-14/bin:$PATH"
+          echo "start $(date -u +%H:%M:%S)"
           make ARCH=arm64 SRCARCH=arm64 LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               HOSTCC=gcc HOSTCXX=g++ \
+               CROSS_COMPILE=aarch64-linux-gnu- HOSTCC=gcc HOSTCXX=g++ \
                KCFLAGS=-Wno-error -j$(nproc) Image
+          echo "end $(date -u +%H:%M:%S)"
           ls -la arch/arm64/boot/Image
 
       - name: Verify Image layout
-        working-directory: base
-        run: python3 ../scripts/verify_image.py arch/arm64/boot/Image
+        run: python3 scripts/verify_image.py base/arch/arm64/boot/Image
 
       - name: Pack boot.img
-        run: |
-          python3 scripts/pack_boot.py base/arch/arm64/boot/Image . out
+        run: python3 scripts/pack_boot.py base/arch/arm64/boot/Image . out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -77,7 +111,6 @@ jobs:
           retention-days: 30
 
       - name: Release
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
@@ -85,6 +118,7 @@ jobs:
           body: |
             Base: ${{ env.BASE_REPO }} @ ${{ env.BASE_BRANCH }}
             Commit: ${{ github.sha }}
+            Workflow run: ${{ github.run_number }}
           files: |
             out/*.img
             out/*.txt
