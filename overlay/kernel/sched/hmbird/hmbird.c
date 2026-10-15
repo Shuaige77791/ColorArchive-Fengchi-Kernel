@@ -2104,6 +2104,9 @@ static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
 
 static void enqueue_task_hmbird(struct rq *rq, struct task_struct *p, int enq_flags)
 {
+	/* DSH_HMBIRD_GUARD -- no scheduler attached yet. */
+	if (unlikely(!hmbird_enabled()))
+		return;
 	int sticky_cpu = get_hmbird_ts(p)->sticky_cpu;
 
 	enq_flags |= get_hmbird_rq(rq)->extra_enq_flags;
@@ -2182,6 +2185,9 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 
 static void dequeue_task_hmbird(struct rq *rq, struct task_struct *p, int deq_flags)
 {
+	/* DSH_HMBIRD_GUARD -- see enqueue_task_hmbird() */
+	if (unlikely(!hmbird_enabled()))
+		return;
 	struct hmbird_rq *hmbird_rq = get_hmbird_rq(rq);
 
 	if (!test_bit(ffs(HMBIRD_TASK_QUEUED), (unsigned long *)&get_hmbird_ts(p)->flags)) {
@@ -2687,6 +2693,9 @@ static struct task_struct *first_local_task(struct rq *rq)
 
 static struct task_struct *pick_next_task_hmbird(struct rq *rq)
 {
+	/* DSH_HMBIRD_GUARD -- see enqueue_task_hmbird() */
+	if (unlikely(!hmbird_enabled()))
+		return NULL;
 	struct task_struct *p;
 
 	p = first_local_task(rq);

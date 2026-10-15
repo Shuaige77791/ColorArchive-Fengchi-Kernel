@@ -241,3 +241,27 @@ Both walks now skip their class symmetrically:
             if (class == &hmbird_sched_class && !hmbird_enabled())
                     continue;
     #endif
+
+## Fix 13: guard the class callbacks themselves
+
+An audit of all 28 sched_class callbacks found only three of them consult
+`*_enabled()` (`check_preempt_curr_scx`, `switched_to_scx`, `switched_to_hmbird`).
+The rest run unconditionally, and the enqueue/dequeue/pick entry points
+dereference `p->scx`, `rq->scx`, `get_hmbird_ts(p)` and `get_hmbird_rq(rq)`
+straight away -- state that only exists once a scheduler has been attached.
+
+Defence in depth now:
+
+* `core.c` -- `pick_next_task()` and `__pick_migrate_task()` skip a class whose
+  scheduler is not attached (fix 12).
+* `ext.c` -- `enqueue_task_scx`, `dequeue_task_scx` and `pick_next_task_scx`
+  return early on `!scx_enabled() || !rq->scx || !p->scx`.
+* `hmbird.c` -- `enqueue_task_hmbird`, `dequeue_task_hmbird` and
+  `pick_next_task_hmbird` return early on `!hmbird_enabled()`.
+
+sha256 of this build:
+
+```
+3be6c5604ea1caec596437c051fb3041ad52a8e715f144afdfb77f055cef2db4  boot_V5_ksu.img
+d8ac951a87a2a07bc96e356842f30810cdc18dff0020e9212f5504e12f456f27  boot_V5_noksu.img
+```

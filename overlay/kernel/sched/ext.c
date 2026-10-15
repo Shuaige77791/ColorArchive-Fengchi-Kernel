@@ -918,6 +918,13 @@ static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
 
 static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags)
 {
+	/*
+	 * DSH_EXT_GUARD -- no scheduler is attached during boot, so rq->scx and
+	 * p->scx are not usable here.  Bail before touching them.
+	 */
+	if (unlikely(!scx_enabled() || !rq->scx || !p->scx))
+		return;
+
 	int sticky_cpu = p->scx->sticky_cpu;
 
 	enq_flags |= rq->scx->extra_enq_flags;
@@ -1001,6 +1008,10 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 
 static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags)
 {
+	/* DSH_EXT_GUARD -- see enqueue_task_scx() */
+	if (unlikely(!scx_enabled() || !rq->scx || !p->scx))
+		return;
+
 	struct scx_rq *scx_rq = rq->scx;
 
 	if (!(p->scx->flags & SCX_TASK_QUEUED)) {
@@ -1789,6 +1800,9 @@ static struct task_struct *first_local_task(struct rq *rq)
 
 static struct task_struct *pick_next_task_scx(struct rq *rq)
 {
+	/* DSH_EXT_GUARD -- see enqueue_task_scx() */
+	if (unlikely(!scx_enabled() || !rq->scx))
+		return NULL;
 	struct task_struct *p;
 
 #ifndef CONFIG_SMP
