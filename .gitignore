@@ -1,16 +1,11 @@
-# build leftovers and one-off backups must never be committed
+# build artefacts must never end up in overlay/
+overlay/**/*.o
+overlay/**/*.a
+overlay/**/*.cmd
+overlay/**/*.mod
+overlay/**/*.symvers
 *.o
 *.a
-*.ko
 *.cmd
-.*.cmd
-*.d
-*.tmp
-*.rej
-*.orig
-*.bak
-*.bak[0-9]*
-*.corrupt.*
-*.mangled.*
-*.broken*
-*.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]
+*.mod
+*.symvers

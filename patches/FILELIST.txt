@@ -1,4 +1,4 @@
-# Fengchi overlay manifest -- generated from overlay/ itself.
+# Fengchi overlay manifest -- generated from overlay/ itself, so it cannot drift.
 include/asm-generic/vmlinux.lds.h
 include/linux/panic_notifier.h
 include/linux/sched.h
@@ -28,9 +28,7 @@ kernel/sched/hmbird/.hmbird_sched_proc.o.cmd
 kernel/sched/hmbird/.hmbird_shadow_tick.o.cmd
 kernel/sched/hmbird/.hmbird_util_track.o.cmd
 kernel/sched/hmbird/Makefile
-kernel/sched/hmbird/built-in.a
 kernel/sched/hmbird/hmbird.c
-kernel/sched/hmbird/hmbird.o
 kernel/sched/hmbird/hmbird_misc.c
 kernel/sched/hmbird/hmbird_misc.o
 kernel/sched/hmbird/hmbird_sched.h
