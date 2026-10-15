@@ -1,8 +1,13 @@
+# Fengchi overlay manifest -- every file in overlay/ that gets copied over the base tree.
+# Generated from overlay/ itself, so it cannot drift.
+#
 include/asm-generic/vmlinux.lds.h
 include/linux/panic_notifier.h
 include/linux/sched.h
 include/linux/sched/ext.h
 include/linux/sched/hmbird.h
+include/linux/sched/hmbird_proc_val.h
+include/linux/sched/hmbird_version.h
 include/linux/sched/posix-timers.h
 include/uapi/linux/sched.h
 init/Kconfig
