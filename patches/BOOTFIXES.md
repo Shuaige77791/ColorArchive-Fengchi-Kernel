@@ -190,3 +190,30 @@ give `kernel/sched/hmbird.h` the declarations it is missing.  Not done here: the
 shipped kernel enables both classes together, and reordering includes on the
 scheduler-core path risks the boot-critical `sched_init()` path for no benefit on
 this device.
+
+---
+
+## Known structural limitation: hmbird.h is not self-contained
+
+`kernel/sched/hmbird.h` (the in-tree one, distinct from the public
+`include/linux/sched/hmbird.h`) uses three things it never declares:
+
+* `struct hmbird_dispatch_q` — declared in `include/linux/sched/hmbird.h:107`
+* `get_hmbird_rq()`            — a macro in `include/linux/sched/hmbird.h:20`
+* `hmbird_enabled()`           — declared in the public header
+
+It compiles today only because `kernel/sched/ext.h` happens to be included
+first (from `build_policy.c:152`), which pulls the public header in ahead of it.
+Consequences:
+
+| configuration | builds? |
+|---|---|
+| `SCHED_CLASS_EXT=y` + `HMBIRD_SCHED=y` (shipped) | yes |
+| `SCHED_CLASS_EXT=y` alone | no — `ext.c` uses `SCHED_CHANGE_BLOCK()`, which lives in `hmbird.h` |
+
+The proper fix is to move `SCHED_CHANGE_BLOCK()` and the
+`hmbird_sched_change_guard_*` helpers into a header both classes include, and to
+give `kernel/sched/hmbird.h` the declarations it is missing.  Not done here: the
+shipped kernel enables both classes together, and reordering includes on the
+scheduler-core path risks the boot-critical `sched_init()` path for no benefit on
+this device.
