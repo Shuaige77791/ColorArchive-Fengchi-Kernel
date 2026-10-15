@@ -11,6 +11,9 @@
 #undef CREATE_TRACE_POINTS
 
 #include "sched.h"
+#ifdef CONFIG_SCHED_CLASS_EXT
+#include "ext.h"
+#endif
 #ifdef CONFIG_HMBIRD_SCHED
 #include "hmbird.h"
 #endif
@@ -7487,8 +7490,27 @@ void __init sched_init(void)
 	int i;
 
 	/* Make sure the linker didn't screw up */
+	/*
+	 * DSH_SCX_PORT: SCHED_DATA now interposes the sched_ext and HMBIRD
+	 * classes between fair and rt, so the contiguity assertions must cover
+	 * them.  Leaving the original two-class gap here makes this BUG_ON fire
+	 * during sched_init(), before the console is up -- the device then just
+	 * resets with no log anywhere.
+	 */
+#ifdef CONFIG_SCHED_CLASS_EXT
+	BUG_ON(&fair_sched_class + 1 != &ext_sched_class);
+#endif
+#ifdef CONFIG_HMBIRD_SCHED
+	BUG_ON(&ext_sched_class + 1 != &hmbird_sched_class);
+#endif
 	BUG_ON(&idle_sched_class + 1 != &fair_sched_class ||
+#ifdef CONFIG_HMBIRD_SCHED
+	       &hmbird_sched_class + 1 != &rt_sched_class ||
+#elif defined(CONFIG_SCHED_CLASS_EXT)
+	       &ext_sched_class + 1 != &rt_sched_class ||
+#else
 	       &fair_sched_class + 1 != &rt_sched_class ||
+#endif
 	       &rt_sched_class + 1   != &dl_sched_class);
 #ifdef CONFIG_SMP
 	BUG_ON(&dl_sched_class + 1 != &stop_sched_class);
@@ -7644,6 +7666,13 @@ void __init sched_init(void)
 	idle_thread_set_boot_cpu();
 #endif
 	init_sched_fair_class();
+
+#ifdef CONFIG_SCHED_CLASS_EXT
+	init_sched_ext_class();
+#endif
+#ifdef CONFIG_HMBIRD_SCHED
+	init_sched_hmbird_class();
+#endif
 
 	init_schedstats();
 
@@ -8971,23 +9000,47 @@ void call_trace_sched_update_nr_running(struct rq *rq, int count)
  * nothing else in core.c changes.
  */
 #ifdef CONFIG_HMBIRD_SCHED
+/*
+ * DSH_SCX_PORT -- mirrors the vendor's sched_change_guard_* under hmbird_ names.
+ *
+ * SCHED_CHANGE_BLOCK() is
+ *     for (cg = init(rq,p,flags); !cg.done; fini(&cg,flags)) { ...body... }
+ * so the contract is:
+ *   init : if the task is queued and not current, dequeue it and leave
+ *          done == false, so the body runs once.  Otherwise set done = true
+ *          and the body is skipped.
+ *   fini : re-enqueue the task (it was taken off the rq) and set done = true
+ *          to terminate the loop.
+ *
+ * Earlier this file set done = true unconditionally inside init and never
+ * dequeued, so every SCHED_CHANGE_BLOCK body was skipped -- including ext.c's
+ * "cycling deq/enq is enough" block and hmbird's slice/prio updates.  Tasks
+ * then never re-entered a runqueue and the device hung at boot.
+ */
 struct hmbird_sched_change_guard
 hmbird_sched_change_guard_init(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct hmbird_sched_change_guard cg = {
-		.rq = rq,
 		.p = p,
+		.rq = rq,
 		.queued = task_on_rq_queued(p),
 		.running = task_current(rq, p),
 	};
-	update_rq_clock(rq);
-	cg.done = true;
+
+	if (cg.queued && !cg.running) {
+		update_rq_clock(rq);
+		dequeue_task(rq, p, flags | DEQUEUE_NOCLOCK);
+		cg.done = false;
+	} else {
+		cg.done = true;
+	}
 	return cg;
 }
 
 void hmbird_sched_change_guard_fini(struct hmbird_sched_change_guard *cg, int flags)
 {
-	if (cg->queued)
+	if (cg->queued && !cg->running)
 		enqueue_task(cg->rq, cg->p, flags | ENQUEUE_NOCLOCK);
+	cg->done = true;
 }
 #endif /* CONFIG_HMBIRD_SCHED */

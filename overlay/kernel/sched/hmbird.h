@@ -326,9 +326,11 @@ static inline const struct sched_class *next_active_class(const struct sched_cla
  * HMBIRD requires a balance() call before every pick_next_task() call including
  * when waking up from idle.
  */
+#ifndef for_balance_class_range
 #define for_balance_class_range(class, prev_class, end_class)			\
 	for_active_class_range(class, (prev_class) > &hmbird_sched_class ?		\
 				&hmbird_sched_class : (prev_class), (end_class))
+#endif
 
 #define MIN_CGROUP_DL_IDX (5)      /* 8ms */
 #define DEFAULT_CGROUP_DL_IDX (8)  /* 64ms */

@@ -1,0 +1,87 @@
+# Boot fixes applied after the first round of bisection
+
+Bisection on device (OnePlus 10T / Ace Pro, PGP110, 5.10.236-ColorArchive):
+
+| build | contents                                        | result |
+|-------|-------------------------------------------------|--------|
+| L0    | pristine op10t sources + #50 config + my toolchain | BOOTS  |
+| L1    | L0 + kernel/dsh_eco.c                            | BOOTS  |
+| L2    | L0 + the full fengchi port                       | FAILS  |
+
+So the environment, the toolchain, the config, the packing and dsh_eco are all
+exonerated.  The failure is in the port itself.  Eight defects were found and fixed:
+
+1. **`sched_init()` contiguity `BUG_ON` (the prime suspect).**
+   `kernel/sched/core.c` asserts that the original five classes are adjacent and
+   in order:
+       BUG_ON(&idle_sched_class + 1 != &fair_sched_class ||
+              &fair_sched_class + 1 != &rt_sched_class || ...);
+   The port put `ext_sched_class` and `hmbird_sched_class` between fair and rt in
+   `SCHED_DATA`, so `&fair_sched_class + 1` is `ext_sched_class`, the assertion
+   fires, and the kernel panics inside `sched_init()` -- before the console
+   exists, hence no log anywhere, hence a deterministic ~2 s reset.  The
+   assertions now cover all seven classes.
+
+2. **`pick_task` inserted in the middle of `struct sched_class`.**
+   Nothing in 5.10 calls `sched_class->pick_task`; the member only existed so that
+   `ext.c`'s initialiser would compile.  Inserting it mid-struct shifted every
+   later function pointer by 8 bytes, so prebuilt vendor modules that index
+   `struct sched_class` by offset (the Qualcomm WALT scheduler among them) read
+   the wrong pointer.  Removed; the struct is back to the stock 24 pointers.
+
+3. **`init_sched_ext_class()` / `init_sched_hmbird_class()` were never called.**
+   `init_sched_hmbird_class()` is what allocates `init_task`'s `hmbird_entity`:
+       init_hmbird = kzalloc(sizeof(struct hmbird_entity), GFP_KERNEL);
+       init_task.android_oem_data1[HMBIRD_TS_IDX] = (u64)init_hmbird;
+   With the function never invoked, `get_hmbird_ts()` returned NULL for every
+   task forever.  Both calls are now in `sched_init()`, right after
+   `init_sched_fair_class()` where 6.x puts them.
+
+4. **Three `hmbird` accessors had no NULL check.**
+   `task_is_top_task()`, `get_top_task_prop()` and `reset_top_task_prop()`
+   dereferenced `get_hmbird_ts(p)` directly while the seven accessors next to them
+   checked for NULL.  All three are NULL-safe now.
+
+5. **`.config` had both classes off.**
+   Left over from an isolation experiment; with them off every
+   `#ifdef CONFIG_HMBIRD_SCHED` block compiles away, so a "successful" build
+   proves nothing.  Both are `y` again.
+
+6. **`kernel/fork.c` had duplicated labels.**
+   `bad_fork_cleanup_perf` and `bad_fork_cleanup_policy` were defined twice and
+   `WARN_ON(tsk == current)` / `io_uring_free(tsk)` appeared twice in
+   `free_task()`.  The diff against the pristine baseline is now exactly three
+   hmbird insertions.
+
+7. **`kernel/sched/idle.c` was structurally broken** by the insertion (duplicated
+   `put_prev_task_idle`, the class table outside any function).  Restored from
+   the pristine baseline.  The two `hmbird_update_idle()` calls it wanted are
+   dropped on purpose: the idle class never runs on a runqueue hmbird owns.
+
+8. **`for_balance_class_range` was defined twice** (`ext.h` and `hmbird.h`).
+   Guarded with `#ifndef`.
+
+## Deliberately not ported
+
+Some `.rej` hunks cannot exist on 5.10 and are skipped rather than faked:
+
+* `core.c`: `if (p->sched_class == &hmbird_sched_class)` and
+  `return hmbird_prio_less(a, b, in_fi);` need `__task_prio()`, `prio_less()`,
+  `cfs_prio_less()` and `sched_core_free()`.  None of those exist here --
+  core-sched (`CONFIG_SCHED_CORE`) landed in 5.14.  `hmbird_prio_less()` is
+  neither defined nor declared.  The HMBIRD class does not need them while
+  `CONFIG_SCHED_CORE` is off.
+
+* `hmbird.h` / `ext.h`'s `for_each_active_class` and `for_balance_class_range`
+  assume 6.x's **ascending** class layout (`class++`).  This tree walks
+  **descending**:
+      #define for_class_range(class, _from, _to) \
+              for (class = (_from); class != (_to); class--)
+  so those macros would walk the classes the wrong way.  Use `for_each_class`.
+
+## Verified build
+
+    Image 39,583,828 bytes, build EXIT=0, zero errors
+    all seven class symbols within [__begin_sched_classes, __end_sched_classes)
+    every adjacent gap exactly 0xe0  -> the sched_init() assertions hold
+    init_sched_ext_class, init_sched_hmbird_class, dsh_eco_active all present

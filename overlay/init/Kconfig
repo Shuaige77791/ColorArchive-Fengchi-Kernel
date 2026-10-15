@@ -1007,6 +1007,11 @@ config RT_GROUP_SCHED
 	  realtime bandwidth for them.
 	  See Documentation/scheduler/sched-rt-group.rst for more information.
 
+config EXT_GROUP_SCHED
+	bool
+	depends on SCHED_CLASS_EXT && CGROUP_SCHED
+	default y
+
 endif #CGROUP_SCHED
 
 config UCLAMP_TASK_GROUP
@@ -2455,4 +2460,15 @@ config HMBIRD_SCHED
 	default y
 	help
 	  The HMBIRD scheduling class used by OPLUS's fengchi gaming kernel.
+
+config HMBIRD_DEBUG_MODE
+	bool "OPLUS HMBIRD (fengchi) trace_printk debug mode"
+	depends on HMBIRD_SCHED
+	default n
+	help
+	  Enables the trace_printk() based debug tracing inside the HMBIRD
+	  (fengchi) scheduling class.  kernel/sched/hmbird.h and
+	  kernel/sched/hmbird/hmbird_shadow_tick.c reference this symbol but
+	  the 6.x -> 5.10 port never defined it in any Kconfig.  Default off
+	  so the debug paths stay compiled out.
 

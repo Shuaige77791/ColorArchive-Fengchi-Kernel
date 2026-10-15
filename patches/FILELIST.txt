@@ -11,12 +11,16 @@ include/linux/sched/hmbird_version.h
 include/linux/sched/posix-timers.h
 include/uapi/linux/sched.h
 init/Kconfig
+kernel/Kconfig.preempt
 kernel/dsh_eco.c
+kernel/fork.c
 kernel/sched/Makefile
 kernel/sched/build_policy.c
 kernel/sched/core.c
+kernel/sched/debug.c
 kernel/sched/ext.c
 kernel/sched/ext.h
+kernel/sched/fair.c
 kernel/sched/hmbird.h
 kernel/sched/hmbird/Makefile
 kernel/sched/hmbird/hmbird.c
@@ -31,4 +35,5 @@ kernel/sched/hmbird/hmbird_util_track.c
 kernel/sched/hmbird/hmbird_util_track.h
 kernel/sched/hmbird/slim.h
 kernel/sched/hmbird_compat.h
+kernel/sched/idle.c
 kernel/sched/sched.h

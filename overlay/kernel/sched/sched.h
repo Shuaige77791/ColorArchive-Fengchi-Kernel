@@ -169,7 +169,11 @@ static inline int idle_policy(int policy)
 }
 static inline int fair_policy(int policy)
 {
+#ifdef CONFIG_HMBIRD_SCHED
+	return policy == SCHED_HMBIRD || policy == SCHED_NORMAL || policy == SCHED_BATCH;
+#else
 	return policy == SCHED_NORMAL || policy == SCHED_BATCH;
+#endif
 }
 
 static inline int rt_policy(int policy)
@@ -522,6 +526,13 @@ extern void set_task_rq_fair(struct sched_entity *se,
 static inline void set_task_rq_fair(struct sched_entity *se,
 			     struct cfs_rq *prev, struct cfs_rq *next) { }
 #endif /* CONFIG_SMP */
+#else /* CONFIG_FAIR_GROUP_SCHED */
+#ifdef CONFIG_HMBIRD_SCHED
+static inline int sched_group_set_shares(struct task_group *tg, unsigned long shares)
+{
+	return 0;
+}
+#endif
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 #else /* CONFIG_CGROUP_SCHED */
@@ -1918,7 +1929,6 @@ struct sched_class {
 #ifdef CONFIG_SMP
 	int (*balance)(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
 	int  (*select_task_rq)(struct task_struct *p, int task_cpu, int sd_flag, int flags);
-	struct task_struct *(*pick_task)(struct rq *rq);	/* DSH_SCX_PORT */
 	void (*migrate_task_rq)(struct task_struct *p, int new_cpu);
 
 	void (*task_woken)(struct rq *this_rq, struct task_struct *task);

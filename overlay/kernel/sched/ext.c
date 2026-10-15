@@ -2458,7 +2458,6 @@ DEFINE_SCHED_CLASS(ext) = {
 #endif
 
 #ifdef CONFIG_SCHED_CORE
-	.pick_task		= pick_task_scx,
 #endif
 
 	.task_tick		= task_tick_scx,

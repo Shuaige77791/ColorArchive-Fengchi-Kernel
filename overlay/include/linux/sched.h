@@ -1493,13 +1493,16 @@ static inline pid_t task_pgrp_vnr(struct task_struct *tsk)
 #ifdef CONFIG_HMBIRD_SCHED
 static inline bool task_is_top_task(struct task_struct *p)
 {
-	return (((struct hmbird_entity *)(p->android_oem_data1[HMBIRD_TS_IDX]))
-		->top_task_prop & TOP_TASK_BITS_MASK);
+	struct hmbird_entity *entity = get_hmbird_ts(p);
+
+	return entity && (entity->top_task_prop & TOP_TASK_BITS_MASK);
 }
 
 static inline int get_top_task_prop(struct task_struct *p)
 {
-	return get_hmbird_ts(p)->top_task_prop;
+	struct hmbird_entity *entity = get_hmbird_ts(p);
+
+	return entity ? entity->top_task_prop : 0;
 }
 
 static inline int set_top_task_prop(struct task_struct *p, u64 set, u64 clear)
@@ -1513,7 +1516,10 @@ static inline int set_top_task_prop(struct task_struct *p, u64 set, u64 clear)
 
 static inline void reset_top_task_prop(struct task_struct *p)
 {
-	get_hmbird_ts(p)->top_task_prop = 0;
+	struct hmbird_entity *entity = get_hmbird_ts(p);
+
+	if (entity)
+		entity->top_task_prop = 0;
 }
 
 static inline int hmbird_set_sched_prop(struct task_struct *p, unsigned long sp)

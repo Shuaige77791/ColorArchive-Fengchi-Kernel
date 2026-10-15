@@ -186,9 +186,11 @@ static inline void scx_notify_sched_tick(void)
  * SCX requires a balance() call before every pick_next_task() call including
  * when waking up from idle.
  */
+#ifndef for_balance_class_range
 #define for_balance_class_range(class, prev_class, end_class)			\
 	for_active_class_range(class, (prev_class) > &ext_sched_class ?		\
 			       &ext_sched_class : (prev_class), (end_class))
+#endif
 
 #ifdef CONFIG_SCHED_CORE
 bool scx_prio_less(const struct task_struct *a, const struct task_struct *b,
