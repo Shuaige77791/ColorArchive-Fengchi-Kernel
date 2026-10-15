@@ -3287,30 +3287,41 @@ void __init init_sched_ext_class(void)
 
 	init_dsq(&scx_dsq_global, SCX_DSQ_GLOBAL);
 #ifdef CONFIG_SMP
-	BUG_ON(!alloc_cpumask_var(&idle_masks.cpu, GFP_KERNEL));
-	BUG_ON(!alloc_cpumask_var(&idle_masks.smt, GFP_KERNEL));
+	/*
+	 * DSH_EXT_INIT_ALLOC -- sched_init() runs before the console, so a BUG_ON here
+	 * would panic with no log at all.  Warn and carry on instead; the class
+	 * simply stays unusable until these masks are allocated.
+	 */
+	WARN_ON(!alloc_cpumask_var(&idle_masks.cpu, GFP_KERNEL));
+	WARN_ON(!alloc_cpumask_var(&idle_masks.smt, GFP_KERNEL));
 #endif
 	scx_kick_cpus_pnt_seqs =
 		__alloc_percpu(sizeof(scx_kick_cpus_pnt_seqs[0]) *
 			       num_possible_cpus(),
 			       __alignof__(scx_kick_cpus_pnt_seqs[0]));
-	BUG_ON(!scx_kick_cpus_pnt_seqs);
+	WARN_ON(!scx_kick_cpus_pnt_seqs);
 
 	for_each_possible_cpu(cpu) {
 		struct rq *rq = cpu_rq(cpu);
 
 		rq->scx = kmalloc(sizeof(struct scx_rq), GFP_KERNEL);
-		if (rq->scx)
-			rq->scx->rq = rq;
-		else
-			pr_err("fatal error : alloc rq->scx failed!!!\n");
+		if (!rq->scx) {
+			/*
+			 * DSH_EXT_INIT_ALLOC -- no console yet, so warn instead of
+			 * dereferencing NULL.  pick_next_task() skips the class when
+			 * rq->scx is NULL.
+			 */
+			pr_err("<sched_ext> alloc rq->scx failed on cpu %d\n", cpu);
+			continue;
+		}
+		rq->scx->rq = rq;
 
 		init_dsq(&rq->scx->local_dsq, SCX_DSQ_LOCAL);
 		INIT_LIST_HEAD(&rq->scx->watchdog_list);
 
-		BUG_ON(!zalloc_cpumask_var(&rq->scx->cpus_to_kick, GFP_KERNEL));
-		BUG_ON(!zalloc_cpumask_var(&rq->scx->cpus_to_preempt, GFP_KERNEL));
-		BUG_ON(!zalloc_cpumask_var(&rq->scx->cpus_to_wait, GFP_KERNEL));
+		WARN_ON(!zalloc_cpumask_var(&rq->scx->cpus_to_kick, GFP_KERNEL));
+		WARN_ON(!zalloc_cpumask_var(&rq->scx->cpus_to_preempt, GFP_KERNEL));
+		WARN_ON(!zalloc_cpumask_var(&rq->scx->cpus_to_wait, GFP_KERNEL));
 		init_irq_work(&rq->scx->kick_cpus_irq_work, kick_cpus_irq_workfn);
 	}
 

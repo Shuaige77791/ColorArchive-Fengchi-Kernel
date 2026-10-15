@@ -115,16 +115,10 @@ do {								\
  * bits.  HMBIRD aliases them, so provide the same values.
  */
 #ifndef WF_EXEC
-#define WF_EXEC		0x02
-#endif
-#ifndef WF_FORK
-#define WF_FORK		0x04
+#define WF_EXEC		0x20
 #endif
 #ifndef WF_TTWU
-#define WF_TTWU		0x08
-#endif
-#ifndef WF_SYNC
-#define WF_SYNC		0x10
+#define WF_TTWU		0x40
 #endif
 
 enum hmbird_wake_flags {

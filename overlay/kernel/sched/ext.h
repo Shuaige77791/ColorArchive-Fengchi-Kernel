@@ -16,6 +16,26 @@
  */
 #define __bpf_kfunc __used noinline
 
+/*
+ * DSH_5_10_WF_SHIM -- 5.10 rq_flags has only WF_SYNC / WF_FORK / WF_MIGRATED /
+ * WF_ON_CPU / WF_ANDROID_VENDOR.  sched-ext's scx_wake_flags also wants WF_EXEC,
+ * WF_TTWU and WF_SHIM, which only exist from 6.x on.  In 6.x they are informational
+ * bits describing why the wakeup happens; nothing in the generic wakeup path
+ * branches on them, and sched_ext only forwards them to BPF as scx_wake_flags.
+ * 5.10 already spends 0x01/0x02/0x04/0x08 and 0x1000, so 0x20/0x40/0x80 are
+ * free.  Use those: reusing 0x02 or 0x08 would silently alias WF_FORK or
+ * WF_ON_CPU and make every BPF-visible wakeup reason wrong.
+ */
+#ifndef WF_EXEC
+#define WF_EXEC		0x20		/* 5.10: wakee is going to execve */
+#endif
+#ifndef WF_TTWU
+#define WF_TTWU		0x40		/* 5.10: wakee returns from a syscall */
+#endif
+#ifndef WF_SHIM
+#define WF_SHIM		0x80		/* 5.10: wakeup from a shim layer */
+#endif
+
 enum scx_wake_flags {
 	/* expose select WF_* flags as enums */
 	SCX_WAKE_EXEC		= WF_EXEC,

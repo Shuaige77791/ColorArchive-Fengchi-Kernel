@@ -809,6 +809,14 @@ bool sched_can_stop_tick(struct rq *rq)
 {
 	int fifo_nr_running;
 
+#ifdef CONFIG_HMBIRD_SCHED
+	/*
+	 * DSH_HMBIRD_TICK -- the hmbird class keeps its own time accounting, so
+	 * let it veto stopping the tick (the hook is a no-op while hmbird is off).
+	 */
+	if (hmbird_enabled() && !hmbird_can_stop_tick(rq))
+		return false;
+#endif
 	/* Deadline tasks, even if single, need the tick */
 	if (rq->dl.dl_nr_running)
 		return false;
@@ -1791,16 +1799,35 @@ static inline void check_class_changed(struct rq *rq, struct task_struct *p,
 		p->sched_class->prio_changed(rq, p, oldprio);
 }
 
+#ifdef CONFIG_HMBIRD_SCHED
+/*
+ * DSH_HMBIRD_PREEMPT -- while hmbird is disabled the generic decision stands;
+ * once it is enabled its own pick logic decides.
+ */
+static bool hmbird_preempt_wanted(struct rq *rq)
+{
+	return hmbird_enabled();
+}
+#endif
+
 void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
+#ifdef CONFIG_HMBIRD_SCHED
+	/*
+	 * DSH_HMBIRD_PREEMPT -- once hmbird is enabled it runs its own selection and
+	 * preemption logic, so leave rq->need_resched to it.
+	 */
+	if (hmbird_preempt_wanted(rq) && task_on_hmbird(p))
+		return;
+#endif
 	if (p->sched_class == rq->curr->sched_class)
 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
 	else if (p->sched_class > rq->curr->sched_class)
 		resched_curr(rq);
 
 	/*
-	 * A queue event has occurred, and we're going to schedule.  In
-	 * this case, we can save a useless back to back clock update.
+	 * A queue event has occurred, and we're going to schedule.  In this
+	 * case, we can save a useless back to back clock update.
 	 */
 	if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
 		rq_clock_skip_update(rq);
@@ -3487,6 +3514,19 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
 	trace_android_rvh_sched_fork(p);
 
+#ifdef CONFIG_HMBIRD_SCHED
+	/*
+	 * DSH_HMBIRD_FORK -- give the hmbird class a chance to claim the new task
+	 * before the generic path assigns a sched_class.
+	 */
+	{
+		int hmbird_ret = hmbird_pre_fork(p);
+
+		if (hmbird_ret)
+			goto hmbird_fork_cancel;
+	}
+#endif
+
 	__sched_fork(clone_flags, p);
 	/*
 	 * We mark the process as NEW here. This guarantees that
@@ -3514,6 +3554,11 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
 			p->static_prio = NICE_TO_PRIO(0);
 
+#ifdef CONFIG_HMBIRD_SCHED
+	if (hmbird_check_setscheduler(p, p->policy))
+		return -EINVAL;
+#endif
+
 		p->prio = p->normal_prio = p->static_prio;
 		set_load_weight(p);
 
@@ -3524,12 +3569,17 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		p->sched_reset_on_fork = 0;
 	}
 
-	if (dl_prio(p->prio))
+	if (dl_prio(p->prio)) {
 		return -EAGAIN;
-	else if (rt_prio(p->prio))
+#ifdef CONFIG_HMBIRD_SCHED
+	} else if (task_on_hmbird(p)) {
+		p->sched_class = &hmbird_sched_class;
+#endif
+	} else if (rt_prio(p->prio)) {
 		p->sched_class = &rt_sched_class;
-	else
+	} else {
 		p->sched_class = &fair_sched_class;
+	}
 
 	init_entity_runnable_average(&p->se);
 	trace_android_rvh_finish_prio_fork(p);
@@ -3546,6 +3596,12 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_SMP
 	plist_node_init(&p->pushable_tasks, MAX_PRIO);
 	RB_CLEAR_NODE(&p->pushable_dl_tasks);
+#endif
+#ifdef CONFIG_HMBIRD_SCHED
+	hmbird_post_fork(p);
+	return 0;
+hmbird_fork_cancel:
+	hmbird_cancel_fork(p);
 #endif
 	return 0;
 }
@@ -4270,6 +4326,9 @@ EXPORT_SYMBOL_GPL(task_sched_runtime);
  */
 void scheduler_tick(void)
 {
+#ifdef CONFIG_HMBIRD_SCHED
+	hmbird_notify_sched_tick();
+#endif
 	int cpu = smp_processor_id();
 	struct rq *rq = cpu_rq(cpu);
 	struct task_struct *curr = rq->curr;
@@ -4650,9 +4709,17 @@ restart:
 	put_prev_task_balance(rq, prev, rf);
 
 	for_each_class(class) {
+#ifdef CONFIG_HMBIRD_SCHED
+		if (class == &hmbird_sched_class && !hmbird_enabled())
+			continue;
+#endif
 		p = class->pick_next_task(rq);
-		if (p)
+		if (p) {
+#ifdef CONFIG_HMBIRD_SCHED
+			hmbird_notify_pick_next_task(rq, p, class);
+#endif
 			return p;
+		}
 	}
 
 	/* The idle class should always have a runnable task: */
@@ -5100,6 +5167,10 @@ static void __setscheduler_prio(struct task_struct *p, int prio)
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(prio))
 		p->sched_class = &rt_sched_class;
+#ifdef CONFIG_HMBIRD_SCHED
+	else if (task_on_hmbird(p))
+		p->sched_class = &hmbird_sched_class;
+#endif
 	else
 		p->sched_class = &fair_sched_class;
 
@@ -5511,6 +5582,11 @@ recheck:
 		if (!valid_policy(policy))
 			return -EINVAL;
 	}
+#ifdef CONFIG_HMBIRD_SCHED
+	if (hmbird_check_setscheduler(current, policy))
+		return -EINVAL;
+#endif
+
 
 	if (attr->sched_flags & ~(SCHED_FLAG_ALL | SCHED_FLAG_SUGOV))
 		return -EINVAL;
@@ -6631,6 +6707,9 @@ SYSCALL_DEFINE1(sched_get_priority_max, int, policy)
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
 	case SCHED_IDLE:
+#ifdef CONFIG_HMBIRD_SCHED
+	case SCHED_HMBIRD:
+#endif
 		ret = 0;
 		break;
 	}
