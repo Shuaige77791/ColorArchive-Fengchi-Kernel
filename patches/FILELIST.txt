@@ -1,6 +1,4 @@
-# Fengchi overlay manifest -- every file in overlay/ that gets copied over the base tree.
-# Generated from overlay/ itself, so it cannot drift.
-#
+# Fengchi overlay manifest -- generated from overlay/ itself.
 include/asm-generic/vmlinux.lds.h
 include/linux/panic_notifier.h
 include/linux/sched.h

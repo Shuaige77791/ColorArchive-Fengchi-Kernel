@@ -4709,6 +4709,18 @@ restart:
 	put_prev_task_balance(rq, prev, rf);
 
 	for_each_class(class) {
+		/*
+		 * DSH_SCX_IDLE_SKIP -- neither class may run its selection code until
+		 * its scheduler is actually attached.  Without this the ext class's
+		 * pick_next_task runs on every scheduling decision from sched_init()
+		 * onwards even though no BPF scheduler is loaded, and hmbird/enqueue
+		 * dereferences per-task state that only exists once its scheduler is
+		 * enabled.
+		 */
+#ifdef CONFIG_SCHED_CLASS_EXT
+		if (class == &ext_sched_class && !scx_enabled())
+			continue;
+#endif
 #ifdef CONFIG_HMBIRD_SCHED
 		if (class == &hmbird_sched_class && !hmbird_enabled())
 			continue;
@@ -7092,6 +7104,15 @@ static struct task_struct *__pick_migrate_task(struct rq *rq)
 	struct task_struct *next;
 
 	for_each_class(class) {
+		/* DSH_SCX_IDLE_SKIP -- see pick_next_task() */
+#ifdef CONFIG_SCHED_CLASS_EXT
+		if (class == &ext_sched_class && !scx_enabled())
+			continue;
+#endif
+#ifdef CONFIG_HMBIRD_SCHED
+		if (class == &hmbird_sched_class && !hmbird_enabled())
+			continue;
+#endif
 		next = class->pick_next_task(rq);
 		if (next) {
 			next->sched_class->put_prev_task(rq, next);

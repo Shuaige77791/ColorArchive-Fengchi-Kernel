@@ -217,3 +217,27 @@ give `kernel/sched/hmbird.h` the declarations it is missing.  Not done here: the
 shipped kernel enables both classes together, and reordering includes on the
 scheduler-core path risks the boot-critical `sched_init()` path for no benefit on
 this device.
+
+---
+
+## Fix 12: pick_next_task() ran the ext class unconditionally
+
+`pick_next_task()` and `__pick_migrate_task()` in `kernel/sched/core.c` walk
+`for_each_class()`. The hmbird class was skipped while `hmbird_enabled()` is
+false; the ext class was not. `pick_next_task_scx()` does not consult
+`scx_enabled()` either -- it goes straight to `first_local_task(rq)` and from
+there into the BPF dispatch path, which has no scheduler attached during boot.
+So from `sched_init()` onwards every scheduling decision entered ext code with
+uninitialised per-rq and per-task state, before the console exists. That matches
+"2 s of logo, then a reset, with no log anywhere" exactly.
+
+Both walks now skip their class symmetrically:
+
+    #ifdef CONFIG_SCHED_CLASS_EXT
+            if (class == &ext_sched_class && !scx_enabled())
+                    continue;
+    #endif
+    #ifdef CONFIG_HMBIRD_SCHED
+            if (class == &hmbird_sched_class && !hmbird_enabled())
+                    continue;
+    #endif
