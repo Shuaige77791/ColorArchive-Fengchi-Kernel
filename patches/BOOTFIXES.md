@@ -265,3 +265,30 @@ sha256 of this build:
 3be6c5604ea1caec596437c051fb3041ad52a8e715f144afdfb77f055cef2db4  boot_V5_ksu.img
 d8ac951a87a2a07bc96e356842f30810cdc18dff0020e9212f5504e12f456f27  boot_V5_noksu.img
 ```
+
+## Fix 14: idle.c never called hmbird_update_idle()
+
+The idle class runs whenever a CPU has nothing else to run, which is most of
+boot. Our `put_prev_task_idle()` was empty and `set_next_task_idle()` did not
+notify hmbird, so the hmbird class never learned that the CPU went idle.
+
+    put_prev_task_idle():  hmbird_update_idle(rq, false);
+    set_next_task_idle():  hmbird_update_idle(rq, true);
+
+`kernel/sched/idle.c` now includes `hmbird.h` directly; it is not self-contained
+and only compiled because the include chain happened to work.
+
+## Fix 15: hmbird_check_setscheduler() got the wrong task
+
+In `__sched_setscheduler(struct task_struct *p, ...)` the call passed `current`
+(the caller) instead of `p` (the task being changed), so it validated the wrong
+task's state. Now `hmbird_check_setscheduler(p, policy)`. The other six hmbird
+call sites were re-checked against the prototypes in kernel/sched/hmbird.h and all
+match.
+
+sha256 of this build:
+
+```
+ba197dbc6cbf3e8351896d0e6f59ce3328baeb94e7504191c47174e2ffeb64eb  boot_V6_ksu.img
+34aa59cc4db2a83684cc793546bef3ed7481445a74c1504ebdc4dcb89ce0e305  boot_V6_noksu.img
+```

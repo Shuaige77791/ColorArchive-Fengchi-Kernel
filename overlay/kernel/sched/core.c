@@ -5595,7 +5595,8 @@ recheck:
 			return -EINVAL;
 	}
 #ifdef CONFIG_HMBIRD_SCHED
-	if (hmbird_check_setscheduler(current, policy))
+	/* DSH_HMBIRD_POLICY -- p is the task being changed, not current. */
+	if (hmbird_check_setscheduler(p, policy))
 		return -EINVAL;
 #endif
 
