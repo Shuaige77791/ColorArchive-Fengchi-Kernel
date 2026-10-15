@@ -4370,3 +4370,31 @@ void __init init_sched_hmbird_class(void)
 	panic_blk_init();
 }
 
+
+/*
+ * DSH_HMBIRD_ENABLE_SWITCH -- boot-time switch for the hmbird class.
+ *
+ * hmbird_ops_enable() is static and its only caller is bpf_hmbird_reg(), i.e.
+ * it is reachable only by loading a BPF scheduler, and the BTF kfunc layer on
+ * this tree is a stub.  So the class can never be turned on at all.  This adds a
+ * direct entry point.
+ *
+ * Default 0: the class stays registered but inert, exactly as before, so the
+ * shipped image costs nothing.  Boot with hmbird.enable=1 to activate it.
+ */
+static int dsh_hmbird_enable = 0;
+module_param_named(enable, dsh_hmbird_enable, int, 0644);
+MODULE_PARM_DESC(enable, "enable the hmbird scheduling class at boot");
+
+int __init dsh_hmbird_enable_switch(void)
+{
+	if (!dsh_hmbird_enable)
+		return 0;
+	if (hmbird_enabled())
+		return 0;
+
+	pr_info("<hmbird_sched>: enabling from kernel parameter\n");
+	return hmbird_ops_enable(NULL);
+}
+
+late_initcall(dsh_hmbird_enable_switch);

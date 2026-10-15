@@ -292,3 +292,26 @@ sha256 of this build:
 ba197dbc6cbf3e8351896d0e6f59ce3328baeb94e7504191c47174e2ffeb64eb  boot_V6_ksu.img
 34aa59cc4db2a83684cc793546bef3ed7481445a74c1504ebdc4dcb89ce0e305  boot_V6_noksu.img
 ```
+
+## Fix 16: neither class could ever be enabled
+
+`hmbird_ops_enable()` is `static` and its only caller is `bpf_hmbird_reg()` --
+i.e. it is reachable only by loading a BPF scheduler, and the BTF kfunc layer in
+`kernel/sched/hmbird_compat.h` is a stub. `scx_ops_attach()` does not exist in
+this tree at all. So even a clean boot would leave both classes permanently
+inert and fengchi would do nothing.
+
+Both now have a boot-time switch, off by default so the shipped image costs
+nothing:
+
+| parameter | effect |
+|---|---|
+| `scx.enable=1` | `late_initcall` calls `scx_ops_enable()` with the built-in fallback ops |
+| `hmbird.enable=1` | `late_initcall` calls `hmbird_ops_enable(NULL)` |
+
+sha256:
+
+```
+3e3b0eaa5b400f3e0323b93344e734bbd5f1d5a86c93b45b4b3447c28108fc7b  boot_V7_ksu.img
+bcc04aed72d8d741f6c4c3f72dbf59ac13d894d96e57a2909db5fba0fd6af99e  boot_V7_noksu.img
+```

@@ -4000,3 +4000,32 @@ static int __init register_ext_kfuncs(void)
 	return 0;
 }
 __initcall(register_ext_kfuncs);
+
+
+/*
+ * DSH_SCX_ENABLE_SWITCH -- scx_ops_enable() has no caller on this tree
+ * (scx_ops_attach() does not exist and the BTF kfunc layer is a stub), so the
+ * ext class can never be turned on.  Default 0 keeps the shipped image inert;
+ * scx.enable=1 boots with sched_ext active.
+ */
+static int dsh_scx_enable = 0;
+module_param_named(enable, dsh_scx_enable, int, 0644);
+MODULE_PARM_DESC(enable, "enable the sched_ext class at boot");
+
+int __init dsh_scx_enable_switch(void)
+{
+	static struct sched_ext_ops dsh_fallback_ops = {
+		.name = "dsh_fallback",
+		.enqueue = scx_ops_fallback_enqueue,
+		.dispatch = scx_ops_fallback_dispatch,
+	};
+
+	if (!dsh_scx_enable)
+		return 0;
+	if (scx_enabled())
+		return 0;
+	pr_info("sched_ext: enabling from kernel parameter\n");
+	return scx_ops_enable(&dsh_fallback_ops);
+}
+
+late_initcall(dsh_scx_enable_switch);
