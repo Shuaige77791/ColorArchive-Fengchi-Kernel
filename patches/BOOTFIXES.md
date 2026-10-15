@@ -124,3 +124,42 @@ Some `.rej` hunks cannot exist on 5.10 and are skipped rather than faked:
     console.**  Any of them failing panics with no log at all -- the exact
     observed symptom.  They are now `WARN_ON`, and the `rq->scx` allocation failure
     path `continue`s instead of dereferencing NULL.
+
+---
+
+# Second pass (found after the first build)
+
+9. **`WF_EXEC` / `WF_TTWU` / `WF_SHIM` did not exist in 5.10, and the values chosen
+   for them aliased live flags.**  `kernel/sched/ext.h` and `kernel/sched/hmbird.h`
+   defined `WF_EXEC = 0x02`, `WF_TTWU = 0x08`, `WF_FORK = 0x04` and
+   `WF_SYNC = 0x10`, while 5.10 already has `WF_SYNC = 0x01`, `WF_FORK = 0x02`,
+   `WF_MIGRATED = 0x04`, `WF_ON_CPU = 0x08`.  Every wakeup reason the scheduler
+   forwarded to BPF was therefore wrong.  They now sit on bits 5.10 leaves free
+   (0x20 / 0x40 / 0x80), and the incorrect `WF_FORK` / `WF_SYNC` redefinitions
+   were dropped.
+
+10. **None of the seventeen hmbird hooks had ever landed.**  The `.rej` files were
+    present but the code was absent, so the hmbird class was registered and then
+    never reached: nothing called its enqueue, dequeue, pick or preemption path.
+    All of these are now wired:
+
+    | hook | site |
+    |------|------|
+    | `hmbird_pre_fork()` / `hmbird_post_fork()` | `sched_fork()` |
+    | `hmbird_cancel_fork()` | `sched_fork()` failure path, via `hmbird_fork_cancel:` |
+    | `hmbird_free()` | `free_task()` |
+    | `task_on_hmbird()` branch | `sched_fork()` class choice |
+    | `task_on_hmbird()` branch | `__setscheduler_prio()` |
+    | `hmbird_check_setscheduler()` | `sched_setscheduler()` and the fork reset path |
+    | `case SCHED_HMBIRD:` | `sched_get_priority_{min,max}()` |
+    | `hmbird_can_stop_tick()` | `sched_can_stop_tick()` |
+    | `hmbird_preempt_wanted()` | `check_preempt_curr()` |
+    | `hmbird_notify_pick_next_task()` | `pick_next_task()`, skipping the class while disabled |
+    | `hmbird_notify_sched_tick()` | `scheduler_tick()` |
+    | `init_sched_ext_class()` | `sched_init()` |
+    | `init_sched_hmbird_class()` | `sched_init()` |
+
+11. **`init_sched_ext_class()` BUG_ONs on six allocations and runs before the
+    console.**  Any of them failing panics with no log at all -- the exact
+    observed symptom.  They are now `WARN_ON`, and the `rq->scx` allocation failure
+    path `continue`s instead of dereferencing NULL.
