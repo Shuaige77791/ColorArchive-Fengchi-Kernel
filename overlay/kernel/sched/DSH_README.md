@@ -130,3 +130,25 @@ requested one after 3 rounds it restores the original and stops enforcing that
 policy. The first attempt is delayed 45 s so that `echo 0 > /proc/dsh_gov/enforce`
 is always reachable. Worst case the device falls back to the vendor governor
 within about two minutes.
+
+### Atomic-context safety of the hot path
+`dsh_update_util()` is called from the cpufreq update hook -- inside the
+scheduler, with the runqueue lock held and interrupts off.  Anything that can
+sleep there is an immediate hang, so the six functions reachable from that hook
+were scanned for sleeping primitives:
+
+    ok dsh_update_util          clean
+    ok dsh_perf_for_cpu         clean
+    ok dsh_get_next_freq        clean
+    ok dsh_target_load          clean
+    ok dsh_soft_freq_clamp      clean
+    ok dsh_update_cpufreq       clean
+
+    ===> HOT PATH IS SLEEP-FREE
+
+What it does use is the same set schedutil uses from the same context:
+`raw_spin_lock_irqsave()` around the frequency decision,
+`cpufreq_driver_resolve_freq()`, `cpufreq_driver_fast_switch()`, and
+`kthread_queue_work()` for the non-fast-switch path.  schedutil's own
+`get_next_freq()` also calls `cpufreq_driver_resolve_freq()` from its update
+hook, so the structure is equivalent to a governor that ships in mainline.
