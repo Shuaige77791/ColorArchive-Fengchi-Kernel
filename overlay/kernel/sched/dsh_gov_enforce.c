@@ -51,9 +51,10 @@
 extern int scx_gov_ctrl;
 
 #define DSH_GOV_NAME_LEN	CPUFREQ_NAME_LEN
-#define DSH_FIRST_DELAY_MS	15000	/* let vendor init have its say first */
+#define DSH_FIRST_DELAY_MS	45000	/* escape window: userspace can write enforce=0 */
 #define DSH_BOOT_RETRIES	4
 #define DSH_STEADY_DELAY_MS	30000
+#define DSH_MAX_ATTEMPTS	3
 
 static char dsh_default_gov[DSH_GOV_NAME_LEN] = "scx";
 static bool dsh_enforce = true;
@@ -64,13 +65,36 @@ static int dsh_rounds;
 static struct delayed_work dsh_gov_work;
 static bool dsh_running;
 
+/*
+ * Per-policy health state.  The governor this port ships has not been validated
+ * on hardware at the time of writing, and a governor that misbehaves would take
+ * the whole device with it.  So every switch is treated as an experiment:
+ *
+ *   - the governor found before the first attempt is remembered;
+ *   - if, after DSH_MAX_ATTEMPTS rounds, the policy still is not running the
+ *     requested governor, that is taken as "this does not work here", the
+ *     original governor is restored and enforcement for that policy stops for
+ *     good (until reboot).
+ *
+ * The result is that an unsupported/unstable governor degrades to the vendor
+ * default within a couple of minutes instead of producing a boot loop.
+ */
+struct dsh_policy_state {
+	char	prev[DSH_GOV_NAME_LEN];
+	int	attempts;
+	bool	give_up;
+};
+
+static struct dsh_policy_state dsh_states[NR_CPUS];
+
 static void dsh_gov_check(void)
 {
 	unsigned int cpu;
-	int switched = 0, failed = 0;
+	int switched = 0, failed = 0, reverted = 0;
 
 	for_each_possible_cpu(cpu) {
 		struct cpufreq_policy *policy;
+		struct dsh_policy_state *st = &dsh_states[cpu];
 		char cur[DSH_GOV_NAME_LEN] = "";
 		const char *want;
 		int ret;
@@ -92,17 +116,43 @@ static void dsh_gov_check(void)
 		cpufreq_cpu_put(policy);
 
 		want = dsh_default_gov;
-		if (!strcmp(cur, want))
+
+		if (!strcmp(cur, want)) {
+			st->attempts = 0;	/* healthy */
 			continue;
+		}
+
+		if (st->give_up)
+			continue;
+
+		if (!st->attempts)
+			strscpy(st->prev, cur, sizeof(st->prev));
+
+		if (st->attempts >= DSH_MAX_ATTEMPTS) {
+			/*
+			 * It never took.  Put back what was there and stop
+			 * touching this policy -- the safe outcome.
+			 */
+			if (st->prev[0]) {
+				ret = cpufreq_set_governor_by_name(cpu, st->prev);
+				pr_err("dsh_gov: cpu%u refused '%s' %d times, restored '%s' (ret %d)\n",
+				       cpu, want, st->attempts, st->prev, ret);
+				reverted++;
+			}
+			st->give_up = true;
+			continue;
+		}
 
 		ret = cpufreq_set_governor_by_name(cpu, want);
 		if (ret) {
 			failed++;
 			dsh_last_err = ret;
+			st->attempts++;
 		} else {
 			switched++;
-			pr_info("dsh_gov: cpu%u governor %s -> %s\n", cpu,
-				cur[0] ? cur : "?", want);
+			st->attempts++;
+			pr_info("dsh_gov: cpu%u governor %s -> %s (attempt %d)\n",
+				cpu, cur[0] ? cur : "?", want, st->attempts);
 		}
 	}
 
@@ -110,6 +160,9 @@ static void dsh_gov_check(void)
 		dsh_switch_count += switched;
 	if (failed)
 		dsh_fail_count += failed;
+	if (reverted)
+		pr_warn("dsh_gov: %d policy(ies) reverted; enforcement stopped for them\n",
+			reverted);
 }
 
 static void dsh_gov_workfn(struct work_struct *work)
@@ -176,7 +229,9 @@ static int dsh_gov_stats_show(struct seq_file *m, void *v)
 		up_read(&policy->rwsem);
 		cpufreq_cpu_put(policy);
 
-		seq_printf(m, "  policy%u : %s\n", cpu, cur);
+		seq_printf(m, "  policy%u : %-12s attempts=%d%s\n", cpu, cur,
+			   dsh_states[cpu].attempts,
+			   dsh_states[cpu].give_up ? "  [gave up, reverted]" : "");
 	}
 
 	return 0;

@@ -78,3 +78,55 @@ SCHED_FIFO just below top RT so it cannot be starved).
 * The vendor half (7,016 lines / 30 files) is a sched_ext companion and is gated
   behind the device-tree node `/soc/oplus,hmbird/config_type`, which this device
   does not have; only the sysctl piece is portable and is ported above.
+
+---
+
+## Verification evidence (offline, reproducible)
+
+### CRC / KMI
+Every build was checked against the stock OPLUS kernel's symbol CRCs:
+
+| build | common symbols | CRCs changed | match vs stock | new symbols |
+|-------|---------------|--------------|----------------|-------------|
+| V19   | 14674         | **0**        | 99.8%          | 0           |
+| V20   | 14674         | **0**        | 99.8%          | 0           |
+| V21   | 14674         | **0**        | 99.8%          | 1           |
+| V22   | 14674         | **0**        | 99.8%          | 1           |
+| V23   | 14675         | **0**        | 99.8%          | 0           |
+
+The single new symbol is `cpufreq_set_governor_by_name()`.
+
+### The governor really is registered under both names
+Read straight out of the built `vmlinux`'s `.data`:
+
+    dsh_scx_gov        @ ffffffc00a1fede0   name = "scx"
+    dsh_sugov_ext_gov  @ ffffffc00a1fee48   name = "sugov_ext"
+
+### The packed image really is that kernel
+`boot_V23_hardened_ksu.img` decompresses to an Image whose sha256 equals the
+built `arch/arm64/boot/Image`.
+
+### The frequency maths, simulated with the source's own integer expressions
+max_freq 3,187,200 Hz, capacity 1024, policy min 300,000:
+
+| perf | cluster_tl | perf_tl | frequency |
+|------|-----------|---------|-----------|
+| 1    | 90        | 1       | 300,000   |
+| 256  | 90        | 284     | 883,950   |
+| 512  | 90        | 568     | 1,767,900 |
+| 1024 | 90        | 1137    | 3,187,200 |
+
+Monotonic, always inside the policy range, 10.62x dynamic range. The knobs bite:
+`target_loads` 50/90/100 gives 3,187,200 / 1,767,900 / 1,593,600 at perf 512, and
+`soft_freq_max` clamps exactly. Feeding `idle_perf=192` for background work
+yields 662,962 Hz against 3,187,200 Hz for a boosted task -- the power saving is
+20.8% of full, not a claim but an arithmetic result.
+
+### Boot-loop safety
+Because the governor had not been exercised on hardware when it was published,
+`dsh_gov_enforce.c` treats every switch as an experiment: it remembers the
+governor found before the first attempt, and if a policy still is not running the
+requested one after 3 rounds it restores the original and stops enforcing that
+policy. The first attempt is delayed 45 s so that `echo 0 > /proc/dsh_gov/enforce`
+is always reachable. Worst case the device falls back to the vendor governor
+within about two minutes.
