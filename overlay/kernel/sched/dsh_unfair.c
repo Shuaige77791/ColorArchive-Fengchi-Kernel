@@ -72,6 +72,8 @@ static int	dsh_target_tgid		= -1;
 static u32	dsh_boost_perf		= DSH_MAX_PERF;
 static u32	dsh_idle_perf		= 192;
 static u32	dsh_heavy_weight	= 3072;
+/* platform-declared importance: uclamp_min floor */
+static unsigned int dsh_uclamp_min = 512;
 
 /* registered critical pids; a plain array, scanned linearly: bounded and cheap */
 static atomic_t	dsh_nr_pids = ATOMIC_INIT(0);
@@ -119,6 +121,10 @@ static inline bool dsh_pid_registered(pid_t pid)
  */
 static inline bool dsh_task_is_critical(struct task_struct *p)
 {
+	/* the platform says this task matters */
+	if (p && uclamp_eff_value(p, UCLAMP_MIN) >= dsh_uclamp_min)
+		return true;
+
 	if (!p)
 		return false;
 
@@ -212,6 +218,7 @@ static int dsh_stats_show(struct seq_file *m, void *v)
 	seq_printf(m, "boost_perf       : %u\n", READ_ONCE(dsh_boost_perf));
 	seq_printf(m, "idle_perf        : %u\n", READ_ONCE(dsh_idle_perf));
 	seq_printf(m, "heavy_weight     : %u\n", READ_ONCE(dsh_heavy_weight));
+	seq_printf(m, "uclamp_min      : %u\n", READ_ONCE(dsh_uclamp_min));
 	seq_printf(m, "registered_pids  : %d\n", atomic_read(&dsh_nr_pids));
 	seq_printf(m, "boost_hits       : %lld\n", atomic64_read(&dsh_boost_hits));
 	seq_printf(m, "idle_hits        : %lld\n", atomic64_read(&dsh_idle_hits));
@@ -311,6 +318,7 @@ static const struct proc_ops dsh_##_name##_pops = {				\
 DSH_U32_FILE(boost_perf, dsh_boost_perf);
 DSH_U32_FILE(idle_perf, dsh_idle_perf);
 DSH_U32_FILE(heavy_weight, dsh_heavy_weight);
+DSH_U32_FILE(uclamp_min, dsh_uclamp_min);
 DSH_I32_FILE(target_tgid, dsh_target_tgid);
 DSH_I32_FILE(enabled, dsh_enabled);
 
@@ -383,6 +391,7 @@ static int dsh_unfair_proc_init(void)
 	e = proc_create("boost_perf", 0644, dsh_proc_dir, &dsh_boost_perf_pops);
 	e = proc_create("idle_perf", 0644, dsh_proc_dir, &dsh_idle_perf_pops);
 	e = proc_create("heavy_weight", 0644, dsh_proc_dir, &dsh_heavy_weight_pops);
+	e = proc_create("uclamp_min", 0644, dsh_proc_dir, &dsh_uclamp_min_pops);
 	e = proc_create("add_pid", 0200, dsh_proc_dir, &dsh_add_pid_pops);
 	e = proc_create("clear", 0200, dsh_proc_dir, &dsh_clear_pops);
 

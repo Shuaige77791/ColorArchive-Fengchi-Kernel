@@ -252,3 +252,38 @@ effect is that a hang is no longer a silent reset:
 
 The image carries the full feature set, so the same flash that tests the port
 also produces the diagnosis if it fails.
+
+---
+
+## Vendor port: what is actually portable, with evidence
+
+The vendor side is 30 files / ~7,000 lines under
+`vendor/oplus/kernel/cpu/sched_ext/`.  Each candidate was dependency-checked
+before any porting, and the result is that **one file is genuinely portable**:
+
+| vendor file | verdict | why |
+|-------------|---------|-----|
+| `hmbird_common_sysctl.c` | **ported** | only needs sysctl; becomes `/proc/sys/hmbird/common/*` |
+| `hmbird_II/hmbird_II_critical_task_monitor.c` | **not portable** | self-contained as a file, but its input does not exist: `waker_count`/`wakee_count` are never incremented *anywhere in the vendor tree*, and this tree has no task-wakeup `android_vh` hook (only 19 `android_vh_*` hooks exist here, and `android_vh_set_wake_flags` carries no `task_struct`).  Porting it would add a registry nothing ever feeds. |
+| `hmbird_kfunc.c`, `hmbird_II.c`, `hmbird_dfx.c`, `hmbird_minidump.c`, `main.c`, `hmbird_CameraScene/*` | **not portable** | sched_ext/BPF host; the host cannot be enabled on this tree (hard reset) |
+| `hmbird_II_sysctl.c` | **not portable** | its `internal_cfg_task_sched_prop_handler()` applies `sched_prop` through the oplus task struct, which lives in `oplus_bsp_sched_assist.ko` (`get_oplus_task_struct` is not in the kernel tree at all) |
+
+This is why the port takes the route it does: the vendor's *algorithm* is worth
+having, its *plumbing* is not.
+
+## Using the platform's own importance signal
+
+Because the vendor's wake-count ranking has no data source here, the classifier
+uses a signal the platform already maintains: `uclamp_min`.  Android and OPLUS
+raise `uclamp_min` for work they consider important, so a task asking for a
+raised floor *is* a critical task by the platform's own definition.
+
+`dsh_unfair.c` now tests it first, before the tgid/pid/weight heuristics:
+
+    if (p && uclamp_eff_value(p, UCLAMP_MIN) >= dsh_uclamp_min)
+            return true;
+
+`dsh_uclamp_min` (default 512) is tunable through
+`/proc/dsh_unfair/uclamp_min` and shown in `stats`.  `uclamp_req` is an existing
+field of `task_struct`, so this reads state rather than adding any -- the CRC
+result is unchanged (0 of 14675).
