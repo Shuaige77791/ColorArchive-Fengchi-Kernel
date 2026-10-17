@@ -185,3 +185,15 @@ selected from a saved setting keeps the governor dormant until the system is up.
 
 CRC check for this build: 14675 common symbols, **0 changed**, 99.8% match
 against the stock kernel.
+
+### V25: the activation itself is lazy
+V24 deferred only the update hook; `dsh_init()` still created the
+SCHED_DEADLINE worker and the sysfs directory during boot.  V25 defers all of
+it: `dsh_init()` allocates memory and records the policy, nothing else.  The
+worker thread, the tunables directory and the update hook are all created by a
+single work item, which runs immediately when the governor is selected after
+boot and 5 s later when it is selected during boot.
+
+So a device whose saved governor is `scx` boots exactly like one that saved
+`walt`: during boot the governor is registered and selected but provably does
+nothing.  That is the property the port was missing.

@@ -48,8 +48,10 @@
  *    governor that starts driving frequency immediately can hang the machine
  *    before it finishes coming up -- which is exactly what happened here.  The
  *    update hook is therefore only installed once system_state is
- *    SYSTEM_RUNNING; if the governor is selected during boot the install is
- *    deferred by 5 s.  Selecting it from userspace after boot is immediate.
+ *    SYSTEM_RUNNING.  If the governor is selected during boot, dsh_init() only
+ *    allocates memory and the entire activation -- worker thread, tunables
+ *    directory and update hook -- is deferred by 5 s.  Selecting it from
+ *    userspace after boot activates it immediately.
  *
  * 5. Names.  Userspace sees "scx" and "sugov_ext".  There is deliberately no
  *    "hmbird" governor on this tree.
@@ -139,8 +141,9 @@ struct dsh_gov_policy {
 	 * So the hook is only installed once the system is running.  Selecting the
 	 * governor from userspace after boot still takes effect immediately.
 	 */
-	struct delayed_work	hooks_work;
+	struct delayed_work	activate_work;
 	bool			hooks_installed;
+	bool			activated;
 
 	u64			last_freq_update_time;
 	unsigned int		next_freq;
@@ -504,7 +507,7 @@ static ssize_t dsh_view_store(struct kobject *kobj, struct attribute *attr,
  ******************************************************************************/
 
 static int dsh_view_create(int idx);
-static void dsh_hooks_workfn(struct work_struct *work);
+static void dsh_activate_workfn(struct work_struct *work);
 
 static struct dsh_gov_policy *dsh_policy_alloc(struct cpufreq_policy *policy)
 {
@@ -589,7 +592,6 @@ static void dsh_kthread_stop(struct dsh_gov_policy *dg)
 static int dsh_init(struct cpufreq_policy *policy)
 {
 	struct dsh_gov_policy *dg;
-	int ret;
 
 	if (!policy->freq_table)
 		return -ENODEV;
@@ -601,23 +603,19 @@ static int dsh_init(struct cpufreq_policy *policy)
 	 * policy kobject is created directly beneath it, so policy->kobj.parent
 	 * is exactly what /sys/devices/system/cpu/cpufreq/<name>/ needs.
 	 */
+	/*
+	 * Deliberately minimal: allocate and record.  No kthread, no sysfs
+	 * directory, no update hook.  Those are created by
+	 * dsh_activate_workfn(), which is only reached once the system is up.
+	 */
 	if (!dsh_cpufreq_kobj)
 		dsh_cpufreq_kobj = policy->kobj.parent;
-	if (dsh_cpufreq_kobj)
-		dsh_view_create(dsh_gov_idx(policy->governor));
 
 	dg = dsh_policy_alloc(policy);
 	if (!dg)
 		return -ENOMEM;
 
-	INIT_DELAYED_WORK(&dg->hooks_work, dsh_hooks_workfn);
-
-	ret = dsh_kthread_create(dg);
-	if (ret) {
-		dsh_policy_free(dg);
-		return ret;
-	}
-
+	INIT_DELAYED_WORK(&dg->activate_work, dsh_activate_workfn);
 	policy->governor_data = dg;
 
 	return 0;
@@ -631,10 +629,12 @@ static void dsh_exit(struct cpufreq_policy *policy)
 		return;
 
 	policy->governor_data = NULL;
-	cancel_delayed_work_sync(&dg->hooks_work);
+	cancel_delayed_work_sync(&dg->activate_work);
 	dg->hooks_installed = false;
+	dg->activated = false;
 	dsh_cpu_reset(dg);
-	dsh_kthread_stop(dg);
+	if (dg->thread)
+		dsh_kthread_stop(dg);
 	dsh_policy_free(dg);
 	cpufreq_disable_fast_switch(policy);
 }
@@ -666,14 +666,36 @@ static void dsh_install_hooks(struct dsh_gov_policy *dg)
 		dg->policy->cpu);
 }
 
-static void dsh_hooks_workfn(struct work_struct *work)
+/*
+ * Everything that can touch shared state -- creating the SCHED_DEADLINE worker,
+ * publishing the tunables directory, installing the update hook -- happens here
+ * and nowhere else.  During boot the governor is selected but completely inert:
+ * dsh_init() only allocates memory.  That is what makes selecting scx from a
+ * saved setting as safe as selecting walt.
+ */
+static void dsh_activate_workfn(struct work_struct *work)
 {
 	struct dsh_gov_policy *dg = container_of(to_delayed_work(work),
-						 struct dsh_gov_policy, hooks_work);
+						 struct dsh_gov_policy, activate_work);
+	int ret;
 
-	pr_info("dsh_gov: deferred hook install for cpu%u (system is up)\n",
+	if (dg->activated)
+		return;
+
+	pr_info("dsh_gov: activating governor for cpu%u (system is up)\n",
 		dg->policy->cpu);
+
+	ret = dsh_kthread_create(dg);
+	if (ret) {
+		pr_err("dsh_gov: cpu%u cannot create worker (%d), leaving governor inert\n",
+		       dg->policy->cpu, ret);
+		return;
+	}
+
+	dsh_view_create(dsh_gov_idx(dg->policy->governor));
 	dsh_install_hooks(dg);
+
+	dg->activated = true;
 }
 
 static int dsh_start(struct cpufreq_policy *policy)
@@ -690,11 +712,11 @@ static int dsh_start(struct cpufreq_policy *policy)
 	 * ever re-selects it.
 	 */
 	if (system_state == SYSTEM_RUNNING) {
-		dsh_install_hooks(dg);
+		dsh_activate_workfn(&dg->activate_work.work);
 	} else {
-		pr_info("dsh_gov: cpu%u selected during boot -- deferring hook install\n",
+		pr_info("dsh_gov: cpu%u selected during boot -- governor stays inert for 5s\n",
 			policy->cpu);
-		schedule_delayed_work(&dg->hooks_work, msecs_to_jiffies(5000));
+		schedule_delayed_work(&dg->activate_work, msecs_to_jiffies(5000));
 	}
 
 	return 0;
@@ -705,7 +727,7 @@ static void dsh_stop(struct cpufreq_policy *policy)
 	struct dsh_gov_policy *dg = policy->governor_data;
 	unsigned int cpu;
 
-	cancel_delayed_work_sync(&dg->hooks_work);
+	cancel_delayed_work_sync(&dg->activate_work);
 
 	if (dg->hooks_installed) {
 		for_each_cpu(cpu, policy->cpus) {
