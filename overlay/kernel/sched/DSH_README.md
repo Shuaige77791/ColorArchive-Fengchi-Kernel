@@ -287,3 +287,29 @@ raised floor *is* a critical task by the platform's own definition.
 `/proc/dsh_unfair/uclamp_min` and shown in `stats`.  `uclamp_req` is an existing
 field of `task_struct`, so this reads state rather than adding any -- the CRC
 result is unchanged (0 of 14675).
+
+---
+
+## Why selection could fail, and why it no longer can
+
+Putting the pieces together, this is the most likely shape of the boot hang, and
+it is worth stating because it explains every observation:
+
+* V17's `scx` was an alias of schedutil, so userspace writing `scaling_governor`
+  **succeeded**, the choice was saved, and boot was fine.
+* V19 onward registered the real governor.  Its `->init()` created a
+  `SCHED_DEADLINE` worker, and `sched_setattr_nocheck()` can be refused on an
+  early-boot system.  That made `->init()` return an error, which made the
+  userspace write fail too -- and a vendor service that retries that write is a
+  hang at the first screen.
+* V25 moved the worker into a deferred work item, so `->init()` always succeeds.
+
+V30 closes the remaining hole: a refused `SCHED_DEADLINE` is no longer fatal at
+all.  The worker is kept as an ordinary kthread, a warning is logged, and the
+governor still applies frequencies -- just without deadline scheduling.  There is
+now no path on which the governor can fail to be selected.
+
+`boot_V30_robust_debug_ksu.img` is the most complete image published: the lazy
+activation, the uclamp classifier, the deferred and gated unfair scheduler, the
+hmbird common sysctl, the enforcement work, and the panic-on-hang command line
+that captures a backtrace if anything does go wrong.

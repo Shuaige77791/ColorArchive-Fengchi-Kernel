@@ -568,10 +568,16 @@ static int dsh_kthread_create(struct dsh_gov_policy *dg)
 
 	ret = sched_setattr_nocheck(thread, &attr);
 	if (ret) {
-		kthread_stop(thread);
-		pr_warn("dsh_gov: SCHED_DEADLINE refused on cpu%u (%d)\n",
-			policy->cpu, ret);
-		return ret;
+		/*
+		 * SCHED_DEADLINE admission can fail on a busy or early-boot
+		 * system.  That must not stop the governor from being selected:
+		 * a failed ->init() makes the userspace write fail too, and some
+		 * vendor services retry that write forever, which hangs the boot.
+		 * So downgrade the worker to an ordinary kthread and continue --
+		 * it still applies frequencies, just without deadline scheduling.
+		 */
+		pr_warn("dsh_gov: SCHED_DEADLINE not available (%d), using a plain kthread\n",
+			ret);
 	}
 
 	kthread_init_work(&dg->work, dsh_gov_work);
