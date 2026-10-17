@@ -82,6 +82,26 @@ static atomic64_t dsh_boost_hits = ATOMIC64_INIT(0);
 static atomic64_t dsh_idle_hits = ATOMIC64_INIT(0);
 static atomic64_t dsh_update_calls = ATOMIC64_INIT(0);
 
+/*
+ * Only feed a governor that actually consumes the request.  With walt (or any
+ * other vendor governor) selected this whole file must do nothing at all --
+ * otherwise we would be calling cpufreq_update_util() into a governor that has
+ * no idea what we are asking for.  That interaction is a prime suspect for the
+ * early-boot hang this port hit.
+ */
+static inline struct cpufreq_policy *dsh_gov_is_ours(unsigned int cpu)
+{
+	struct cpufreq_policy *policy = cpufreq_cpu_get_raw(cpu);
+
+	if (!policy || !policy->governor || !policy->governor->name)
+		return NULL;
+	if (strcmp(policy->governor->name, "scx") &&
+	    strcmp(policy->governor->name, "sugov_ext"))
+		return NULL;
+
+	return policy;
+}
+
 static inline bool dsh_pid_registered(pid_t pid)
 {
 	int i, n = atomic_read(&dsh_nr_pids);
@@ -136,6 +156,9 @@ static void dsh_account_task_time(void *data, struct task_struct *p,
 		perf = READ_ONCE(dsh_idle_perf);
 		atomic64_inc(&dsh_idle_hits);
 	}
+
+	if (!dsh_gov_is_ours(cpu))
+		return;
 
 	if (READ_ONCE(per_cpu(dsh_cpuperf_target, cpu)) == perf)
 		return;
@@ -369,30 +392,46 @@ static int dsh_unfair_proc_init(void)
 
 /* ---- init ----------------------------------------------------------------- */
 
-static int __init dsh_unfair_init(void)
+static void dsh_unfair_start_workfn(struct work_struct *w)
 {
-	int ret, cpu;
-
-	for_each_possible_cpu(cpu)
-		WRITE_ONCE(per_cpu(dsh_cpuperf_target, cpu), 0);
+	int ret;
 
 	ret = register_trace_android_vh_account_task_time(dsh_account_task_time, NULL);
 	if (ret) {
 		pr_err("dsh_unfair: cannot hook account_task_time (%d)\n", ret);
-		return ret;
+		return;
 	}
 
 	ret = register_trace_android_vh_scheduler_tick(dsh_scheduler_tick, NULL);
 	if (ret) {
 		unregister_trace_android_vh_account_task_time(dsh_account_task_time, NULL);
 		pr_err("dsh_unfair: cannot hook scheduler_tick (%d)\n", ret);
-		return ret;
+		return;
 	}
+
+	pr_info("dsh_unfair: hooks armed (system is up)\n");
+}
+
+static DECLARE_DELAYED_WORK(dsh_unfair_start_work, dsh_unfair_start_workfn);
+
+static int __init dsh_unfair_init(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		WRITE_ONCE(per_cpu(dsh_cpuperf_target, cpu), 0);
 
 	dsh_unfair_proc_init();
 
-	pr_info("dsh_unfair: unfair scheduling 2.0 ready (boost=%u idle=%u tgid=%d)\n",
-		dsh_boost_perf, dsh_idle_perf, dsh_target_tgid);
+	/*
+	 * Nothing is armed during boot: the hooks are registered a few seconds
+	 * after the system is up, so early boot cannot be affected at all.
+	 */
+	schedule_delayed_work(&dsh_unfair_start_work, msecs_to_jiffies(8000));
+
+	pr_info("dsh_unfair: ready (hooks will arm 8s after init, boost=%u idle=%u)\n",
+		dsh_boost_perf, dsh_idle_perf);
 	return 0;
 }
+
 late_initcall(dsh_unfair_init);

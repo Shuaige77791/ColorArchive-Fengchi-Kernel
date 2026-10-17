@@ -152,3 +152,36 @@ What it does use is the same set schedutil uses from the same context:
 `kthread_queue_work()` for the non-fast-switch path.  schedutil's own
 `get_next_freq()` also calls `cpufreq_driver_resolve_freq()` from its update
 hook, so the structure is equivalent to a governor that ships in mainline.
+
+---
+
+## Boot-hang fix (V24)
+
+### What was happening
+Userspace restores its saved cpufreq governor early in boot.  When that saved
+value was `scx`, this port's governor was selected while the system was still
+coming up, and it started installing its update hook and driving frequency
+immediately.  The machine hung at the first screen and never finished booting.
+`walt` never had this problem, which is why it could always boot -- and it is why
+the very first V23 boot worked: at that point the saved governor was still
+`walt`, so this port's governor was merely registered, never selected, and none
+of its code ran.
+
+### The three fixes
+1. `dsh_fengchi_gov.c` -- **lazy hook install.** `dsh_start()` installs the
+   update hook immediately only when `system_state == SYSTEM_RUNNING`, i.e. when
+   userspace picks the governor after boot.  If the governor is selected during
+   boot, installation is deferred by 5 s, so the system comes up first.
+2. `dsh_unfair.c` -- **hooks are armed 8 s after init**, not at `late_initcall`,
+   so nothing from this file runs during early boot.
+3. `dsh_unfair.c` -- **the performance request is only emitted when `scx` or
+   `sugov_ext` is the active governor.**  With `walt` (or any other vendor
+   governor) selected, this file is completely inert; it cannot call
+   `cpufreq_update_util()` into a governor that does not expect it.
+
+Together: booting with `walt` runs none of this code, and booting with `scx`
+selected from a saved setting keeps the governor dormant until the system is up.
+`scx` can now boot the device the way `walt` does.
+
+CRC check for this build: 14675 common symbols, **0 changed**, 99.8% match
+against the stock kernel.

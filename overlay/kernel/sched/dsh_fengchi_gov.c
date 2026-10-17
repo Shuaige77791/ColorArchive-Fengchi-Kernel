@@ -44,7 +44,14 @@
  *    down faster than up_rate_limit_us / down_rate_limit_us, which is exactly
  *    what those knobs mean.
  *
- * 4. Names.  Userspace sees "scx" and "sugov_ext".  There is deliberately no
+ * 4. Boot safety.  Userspace restores its saved governor early in boot, so a
+ *    governor that starts driving frequency immediately can hang the machine
+ *    before it finishes coming up -- which is exactly what happened here.  The
+ *    update hook is therefore only installed once system_state is
+ *    SYSTEM_RUNNING; if the governor is selected during boot the install is
+ *    deferred by 5 s.  Selecting it from userspace after boot is immediate.
+ *
+ * 5. Names.  Userspace sees "scx" and "sugov_ext".  There is deliberately no
  *    "hmbird" governor on this tree.
  *
  * Nothing here changes the layout of any shared structure, so exported symbol
@@ -120,6 +127,20 @@ struct dsh_gov_policy {
 
 	struct mutex		work_lock;
 	raw_spinlock_t		update_lock;
+
+	/*
+	 * Installing the update hook is what makes this governor actually run.
+	 * Doing that while the system is still booting is what made the port hang
+	 * at the first screen: the kernel selects the governor early (userspace
+	 * restores its saved choice), our tick hook starts firing immediately, and
+	 * the machine never finishes coming up.  walt does not have that problem,
+	 * which is why it could always boot.
+	 *
+	 * So the hook is only installed once the system is running.  Selecting the
+	 * governor from userspace after boot still takes effect immediately.
+	 */
+	struct delayed_work	hooks_work;
+	bool			hooks_installed;
 
 	u64			last_freq_update_time;
 	unsigned int		next_freq;
@@ -483,6 +504,7 @@ static ssize_t dsh_view_store(struct kobject *kobj, struct attribute *attr,
  ******************************************************************************/
 
 static int dsh_view_create(int idx);
+static void dsh_hooks_workfn(struct work_struct *work);
 
 static struct dsh_gov_policy *dsh_policy_alloc(struct cpufreq_policy *policy)
 {
@@ -588,6 +610,8 @@ static int dsh_init(struct cpufreq_policy *policy)
 	if (!dg)
 		return -ENOMEM;
 
+	INIT_DELAYED_WORK(&dg->hooks_work, dsh_hooks_workfn);
+
 	ret = dsh_kthread_create(dg);
 	if (ret) {
 		dsh_policy_free(dg);
@@ -607,34 +631,71 @@ static void dsh_exit(struct cpufreq_policy *policy)
 		return;
 
 	policy->governor_data = NULL;
+	cancel_delayed_work_sync(&dg->hooks_work);
+	dg->hooks_installed = false;
 	dsh_cpu_reset(dg);
 	dsh_kthread_stop(dg);
 	dsh_policy_free(dg);
 	cpufreq_disable_fast_switch(policy);
 }
 
-static int dsh_start(struct cpufreq_policy *policy)
+static void dsh_install_hooks(struct dsh_gov_policy *dg)
 {
-	struct dsh_gov_policy *dg = policy->governor_data;
 	unsigned int cpu;
 
-	if (!dg)
-		return -EINVAL;
+	if (dg->hooks_installed)
+		return;
 
-	for_each_cpu(cpu, policy->cpus) {
+	for_each_cpu(cpu, dg->policy->cpus) {
 		struct dsh_gov_cpu *dg_cpu = &per_cpu(dsh_gov_cpu, cpu);
 
 		dg_cpu->cpu = cpu;
 		dg_cpu->dg_policy = dg;
 	}
 
-	for_each_cpu(cpu, policy->cpus)
+	for_each_cpu(cpu, dg->policy->cpus)
 		cpufreq_add_update_util_hook(cpu,
 					     &per_cpu(dsh_gov_cpu, cpu).update_util,
 					     dsh_update_util);
 
+	dg->hooks_installed = true;
 	dg->last_freq_update_time = 0;
 	dg->last_freq = 0;
+
+	pr_info("dsh_gov: hooks installed on cpu%u (governor now driving frequency)\n",
+		dg->policy->cpu);
+}
+
+static void dsh_hooks_workfn(struct work_struct *work)
+{
+	struct dsh_gov_policy *dg = container_of(to_delayed_work(work),
+						 struct dsh_gov_policy, hooks_work);
+
+	pr_info("dsh_gov: deferred hook install for cpu%u (system is up)\n",
+		dg->policy->cpu);
+	dsh_install_hooks(dg);
+}
+
+static int dsh_start(struct cpufreq_policy *policy)
+{
+	struct dsh_gov_policy *dg = policy->governor_data;
+
+	if (!dg)
+		return -EINVAL;
+
+	/*
+	 * While the system is still booting, stay hands-off: record the policy
+	 * and do nothing else.  The work item is queued so this cannot be
+	 * forgotten if the governor is selected during early boot and nobody
+	 * ever re-selects it.
+	 */
+	if (system_state == SYSTEM_RUNNING) {
+		dsh_install_hooks(dg);
+	} else {
+		pr_info("dsh_gov: cpu%u selected during boot -- deferring hook install\n",
+			policy->cpu);
+		schedule_delayed_work(&dg->hooks_work, msecs_to_jiffies(5000));
+	}
 
 	return 0;
 }
@@ -644,12 +705,21 @@ static void dsh_stop(struct cpufreq_policy *policy)
 	struct dsh_gov_policy *dg = policy->governor_data;
 	unsigned int cpu;
 
-	for_each_cpu(cpu, policy->cpus)
-		cpufreq_remove_update_util_hook(cpu);
+	cancel_delayed_work_sync(&dg->hooks_work);
 
-	synchronize_rcu();
+	if (dg->hooks_installed) {
+		for_each_cpu(cpu, policy->cpus) {
+			struct dsh_gov_cpu *dg_cpu = &per_cpu(dsh_gov_cpu, cpu);
 
-	if (dg && dg->thread)
+			dg_cpu->dg_policy = NULL;
+		}
+		synchronize_rcu();
+		for_each_cpu(cpu, policy->cpus)
+			cpufreq_remove_update_util_hook(cpu);
+		dg->hooks_installed = false;
+	}
+
+	if (dg->thread)
 		kthread_flush_worker(&dg->worker);
 }
 
