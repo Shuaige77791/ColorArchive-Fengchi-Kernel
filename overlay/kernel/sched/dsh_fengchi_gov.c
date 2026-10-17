@@ -427,6 +427,24 @@ static struct kobj_type dsh_view_ktype = {
 static struct kobject *dsh_view_kobj[DSH_GOV_NR];
 static struct kobject *dsh_cpufreq_kobj;
 
+
+/*
+ * Failsafe.  The governor may be selected (userspace restores its saved choice,
+ * and scx is meant to be the global default) while this switch is still zero, in
+ * which case no update hook is installed and not a single line of the runtime
+ * path executes.  The default is therefore "registered and selectable, but
+ * inert".
+ *
+ * It is a kernel variable and nothing else, so it cannot survive a reboot:
+ * whatever happens after enabling it, one reset returns the device to a state
+ * that is guaranteed to boot.  That is intentional -- it makes a boot loop
+ * impossible and turns "does it hang?" into a question the user can answer from
+ * a running system with one write.
+ */
+static bool dsh_gov_active;
+
+/* forward declaration of the per-policy activation, defined further down */
+static void dsh_activate_workfn(struct work_struct *work);
 static ssize_t dsh_view_show(struct kobject *kobj, struct attribute *attr,
 			     char *buf)
 {
@@ -645,6 +663,27 @@ static void dsh_exit(struct cpufreq_policy *policy)
 	cpufreq_disable_fast_switch(policy);
 }
 
+static void dsh_remove_hooks(struct dsh_gov_policy *dg)
+{
+	unsigned int cpu;
+
+	if (!dg->hooks_installed)
+		return;
+
+	for_each_cpu(cpu, dg->policy->cpus) {
+		struct dsh_gov_cpu *dg_cpu = &per_cpu(dsh_gov_cpu, cpu);
+
+		dg_cpu->dg_policy = NULL;
+	}
+	synchronize_rcu();
+	for_each_cpu(cpu, dg->policy->cpus)
+		cpufreq_remove_update_util_hook(cpu);
+
+	dg->hooks_installed = false;
+	pr_info("dsh_gov: hooks removed from cpu%u (governor inert)\n",
+		dg->policy->cpu);
+}
+
 static void dsh_install_hooks(struct dsh_gov_policy *dg)
 {
 	unsigned int cpu;
@@ -699,7 +738,12 @@ static void dsh_activate_workfn(struct work_struct *work)
 	}
 
 	dsh_view_create(dsh_gov_idx(dg->policy->governor));
-	dsh_install_hooks(dg);
+
+	if (READ_ONCE(dsh_gov_active))
+		dsh_install_hooks(dg);
+	else
+		pr_info("dsh_gov: cpu%u ready but inert (write 1 to /proc/dsh_gov/active to take over)\n",
+			dg->policy->cpu);
 
 	dg->activated = true;
 }
@@ -731,21 +775,11 @@ static int dsh_start(struct cpufreq_policy *policy)
 static void dsh_stop(struct cpufreq_policy *policy)
 {
 	struct dsh_gov_policy *dg = policy->governor_data;
-	unsigned int cpu;
 
 	cancel_delayed_work_sync(&dg->activate_work);
 
-	if (dg->hooks_installed) {
-		for_each_cpu(cpu, policy->cpus) {
-			struct dsh_gov_cpu *dg_cpu = &per_cpu(dsh_gov_cpu, cpu);
-
-			dg_cpu->dg_policy = NULL;
-		}
-		synchronize_rcu();
-		for_each_cpu(cpu, policy->cpus)
-			cpufreq_remove_update_util_hook(cpu);
-		dg->hooks_installed = false;
-	}
+	if (dg->hooks_installed)
+		dsh_remove_hooks(dg);
 
 	if (dg->thread)
 		kthread_flush_worker(&dg->worker);
@@ -823,6 +857,84 @@ static int dsh_view_create(int idx)
 	return 0;
 }
 
+/*
+ * Runtime enable/disable.  Turning it on installs the update hook on every
+ * policy currently running one of our governors; turning it off removes them.
+ * Because the state lives in this variable and nowhere else, a reboot always
+ * returns the device to the inert, guaranteed-bootable state.
+ */
+static int dsh_set_active(bool on)
+{
+	unsigned int cpu;
+	int n = 0;
+
+	WRITE_ONCE(dsh_gov_active, on);
+
+	for_each_possible_cpu(cpu) {
+		struct cpufreq_policy *policy = cpufreq_cpu_get_raw(cpu);
+		struct dsh_gov_policy *dg;
+
+		if (!policy || policy->cpu != cpu)
+			continue;
+		if (dsh_gov_idx(policy->governor) < 0)
+			continue;
+
+		dg = policy->governor_data;
+		if (!dg || !dg->activated)
+			continue;
+
+		if (on) {
+			dsh_install_hooks(dg);
+			n++;
+		} else if (dg->hooks_installed) {
+			dsh_remove_hooks(dg);
+			n++;
+		}
+	}
+
+	pr_info("dsh_gov: active=%d (%d policies)\n", on ? 1 : 0, n);
+	return n;
+}
+
+static int dsh_active_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", READ_ONCE(dsh_gov_active) ? 1 : 0);
+	return 0;
+}
+
+static int dsh_active_open(struct inode *i, struct file *f)
+{
+	return single_open(f, dsh_active_show, NULL);
+}
+
+static ssize_t dsh_active_write(struct file *f, const char __user *ubuf,
+				size_t count, loff_t *ppos)
+{
+	char buf[8];
+	unsigned long val;
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+	buf[count] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
+
+	dsh_set_active(val ? true : false);
+	return count;
+}
+
+static const struct proc_ops dsh_active_pops = {
+	.proc_open	= dsh_active_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+	.proc_write	= dsh_active_write,
+};
+
+static struct proc_dir_entry *dsh_fengchi_dir;
+
 static int __init dsh_gov_init(void)
 {
 	int ret;
@@ -838,7 +950,13 @@ static int __init dsh_gov_init(void)
 	if (ret)
 		pr_err("dsh_gov: register 'sugov_ext' failed (%d)\n", ret);
 	else
-		pr_info("dsh_gov: governor 'sugov_ext' registered\n");
+			pr_info("dsh_gov: governor 'sugov_ext' registered\n");
+
+	dsh_fengchi_dir = proc_mkdir("dsh_fengchi", NULL);
+	if (dsh_fengchi_dir)
+		proc_create("active", 0644, dsh_fengchi_dir, &dsh_active_pops);
+
+	pr_info("dsh_gov: registered and INERT by default; echo 1 > /proc/dsh_fengchi/active to take over\n");
 
 	return 0;
 }

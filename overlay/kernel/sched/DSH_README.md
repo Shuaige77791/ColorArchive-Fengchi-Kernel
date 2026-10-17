@@ -313,3 +313,38 @@ now no path on which the governor can fail to be selected.
 activation, the uclamp classifier, the deferred and gated unfair scheduler, the
 hmbird common sysctl, the enforcement work, and the panic-on-hang command line
 that captures a backtrace if anything does go wrong.
+
+---
+
+## V31: a first flash that cannot hang
+
+Every attempt so far asked the user to risk a first-screen hang to find out whether
+the port works.  V31 removes that risk entirely.
+
+The governor registers and is selectable exactly as before -- `scx` is still the
+intended global default and userspace will find and select it -- but it does
+**not** install its update hook until it is asked to.  The switch is
+
+    /proc/dsh_fengchi/active
+
+The default is `0`.  Until something writes `1`, the runtime path does not
+execute at all: no frequency decisions, no notifications into the scheduler, no
+work items.  The device boots with exactly the behaviour of a kernel that has no
+governor at this address, so nothing in this port can hang the boot.
+
+Two properties make this genuinely safe rather than merely off:
+
+1. **The state is a kernel variable and nothing else.**  It is not a file, not a
+   setting, not a property.  A reboot always returns the device to the inert
+   state, so even if enabling it goes catastrophically wrong, one reset is enough
+   -- a boot loop is impossible.
+2. **Enabling is reversible from a running system.**  `echo 0 > .../active`
+   removes the hooks again immediately and logs it, so a bad behaviour can be
+   backed out without reflashing.
+
+It is also a clean experiment.  If V31 boots, the kernel side of the port is
+sound and any remaining problem is in the runtime path; if enabling it then
+causes trouble, that fact alone localises the fault.
+
+`boot_V31_failsafe_ksu.img` carries the full feature set plus the panic-on-hang
+command line, and CRC is unchanged (0 of 14675).
