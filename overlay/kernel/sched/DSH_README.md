@@ -225,3 +225,30 @@ Read it this way:
 Also fixed while preparing these: `dsh_fengchi_gov.c` and `dsh_unfair.c` were
 coupled -- the governor only declared `dsh_cpuperf_target` while `dsh_unfair.c`
 defined it, so the governor could not link on its own.  The owner now defines it.
+
+---
+
+## V28: a debug build that makes the hang talk
+
+A hang on this device ends in a PMIC hard reset, which leaves no software record
+at all -- every previous attempt to find out what happened failed for that reason.
+This image fixes that from the packing side: the kernel command line inside
+`boot.img` is set to
+
+    console=ttyMSM0,115200n8 ignore_loglevel initcall_debug
+    softlockup_panic=1 hung_task_panic=1 rcupdate.rcu_cpu_stall_timeout=10 panic=10
+
+Qualcomm appends its own arguments after the image's, so these take effect.  The
+effect is that a hang is no longer a silent reset:
+
+* `softlockup_panic` / `hung_task_panic` turn a stalled CPU or task into a panic
+  while there is still enough state to write it out;
+* `panic=10` reboots 10 s later, so the device comes back on its own;
+* `ignore_loglevel` puts everything on the console, and `initcall_debug` prints
+  each initcall -- so if the hang is during initialisation, the last line names
+  the function responsible;
+* ramoops/pstore then holds the console dump, readable after the reboot with
+  `scripts/read_pstore.sh` (also copies into `/data/system/dropbox`).
+
+The image carries the full feature set, so the same flash that tests the port
+also produces the diagnosis if it fails.
