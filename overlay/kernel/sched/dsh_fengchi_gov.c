@@ -441,7 +441,7 @@ static struct kobject *dsh_cpufreq_kobj;
  * impossible and turns "does it hang?" into a question the user can answer from
  * a running system with one write.
  */
-static bool dsh_gov_active;
+static bool dsh_gov_active = true;	/* autostart: scx is the default governor */
 
 /* forward declaration of the per-policy activation, defined further down */
 static void dsh_activate_workfn(struct work_struct *work);
@@ -956,7 +956,7 @@ static int __init dsh_gov_init(void)
 	if (dsh_fengchi_dir)
 		proc_create("active", 0644, dsh_fengchi_dir, &dsh_active_pops);
 
-	pr_info("dsh_gov: registered and INERT by default; echo 1 > /proc/dsh_fengchi/active to take over\n");
+	pr_info("dsh_gov: registered and ACTIVE by default (echo 0 > /proc/dsh_fengchi/active to make it inert)\n");
 
 	return 0;
 }

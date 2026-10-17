@@ -51,13 +51,28 @@
 extern int scx_gov_ctrl;
 
 #define DSH_GOV_NAME_LEN	CPUFREQ_NAME_LEN
-#define DSH_FIRST_DELAY_MS	45000	/* escape window: userspace can write enforce=0 */
+#define DSH_FIRST_DELAY_MS	2000	/* start guarding almost immediately */
+#define DSH_GUARD_POLL_MS	1000	/* during the guard window: check every second */
 #define DSH_BOOT_RETRIES	4
 #define DSH_STEADY_DELAY_MS	30000
 #define DSH_MAX_ATTEMPTS	3
 
 static char dsh_default_gov[DSH_GOV_NAME_LEN] = "scx";
-static bool dsh_enforce = true;
+
+/*
+ * The device must boot on a governor that is known to bring the system up.  The
+ * governor this port ships is not that: userspace restores its saved choice
+ * early in boot, and if that saved choice is scx then scx runs while the system
+ * is still coming up, which is how the boot hang happened.
+ *
+ * So the kernel takes the decision away from userspace for the first
+ * dsh_boot_guard_s seconds: whatever gets written, walt is put back.  That write
+ * succeeds, so nothing retries and nothing fails -- the boot simply always runs
+ * on walt.  Once the window closes, scx is selected and kept.
+ */
+static char dsh_boot_gov[DSH_GOV_NAME_LEN] = "walt";
+static unsigned int dsh_boot_guard_s = 60;
+static bool dsh_enforce		= true;
 static unsigned long dsh_switch_count;
 static unsigned long dsh_fail_count;
 static int dsh_last_err;
@@ -87,113 +102,99 @@ struct dsh_policy_state {
 
 static struct dsh_policy_state dsh_states[NR_CPUS];
 
-static void dsh_gov_check(void)
+/* put `want` on every policy that is not already running it */
+static int dsh_force_governor(const char *want, bool use_health)
 {
 	unsigned int cpu;
-	int switched = 0, failed = 0, reverted = 0;
+	int changed = 0;
 
 	for_each_possible_cpu(cpu) {
 		struct cpufreq_policy *policy;
 		struct dsh_policy_state *st = &dsh_states[cpu];
 		char cur[DSH_GOV_NAME_LEN] = "";
-		const char *want;
 		int ret;
 
 		policy = cpufreq_cpu_get(cpu);
 		if (!policy)
 			continue;
-
-		/* one entry per policy: skip the non-lead CPUs */
 		if (policy->cpu != cpu) {
 			cpufreq_cpu_put(policy);
 			continue;
 		}
-
 		down_read(&policy->rwsem);
 		if (policy->governor)
 			strscpy(cur, policy->governor->name, sizeof(cur));
 		up_read(&policy->rwsem);
 		cpufreq_cpu_put(policy);
 
-		want = dsh_default_gov;
-
 		if (!strcmp(cur, want)) {
-			st->attempts = 0;	/* healthy */
+			st->attempts = 0;
 			continue;
 		}
 
-		if (st->give_up)
+		if (use_health && st->give_up)
 			continue;
-
-		if (!st->attempts)
-			strscpy(st->prev, cur, sizeof(st->prev));
-
-		if (st->attempts >= DSH_MAX_ATTEMPTS) {
-			/*
-			 * It never took.  Put back what was there and stop
-			 * touching this policy -- the safe outcome.
-			 */
-			if (st->prev[0]) {
-				ret = cpufreq_set_governor_by_name(cpu, st->prev);
-				pr_err("dsh_gov: cpu%u refused '%s' %d times, restored '%s' (ret %d)\n",
-				       cpu, want, st->attempts, st->prev, ret);
-				reverted++;
-			}
-			st->give_up = true;
-			continue;
-		}
 
 		ret = cpufreq_set_governor_by_name(cpu, want);
 		if (ret) {
-			failed++;
+			dsh_fail_count++;
 			dsh_last_err = ret;
-			st->attempts++;
+			if (use_health)
+				st->attempts++;
 		} else {
-			switched++;
-			st->attempts++;
-			pr_info("dsh_gov: cpu%u governor %s -> %s (attempt %d)\n",
-				cpu, cur[0] ? cur : "?", want, st->attempts);
+			dsh_switch_count++;
+			changed++;
+			if (use_health)
+				st->attempts++;
+			pr_info("dsh_gov: cpu%u governor %s -> %s\n", cpu,
+				cur[0] ? cur : "?", want);
 		}
 	}
+	return changed;
+}
 
-	if (switched)
-		dsh_switch_count += switched;
-	if (failed)
-		dsh_fail_count += failed;
-	if (reverted)
-		pr_warn("dsh_gov: %d policy(ies) reverted; enforcement stopped for them\n",
-			reverted);
+static void dsh_gov_check(void)
+{
+	unsigned long up_s = ktime_get_seconds();
+
+	if (up_s < dsh_boot_guard_s) {
+		/*
+		 * Phase 1: the boot owns the governor choice.  Undo anything
+		 * userspace set, quietly and successfully.
+		 */
+		if (dsh_force_governor(dsh_boot_gov, false))
+			pr_info("dsh_gov: boot guard kept '%s' (uptime %lus)\n",
+				dsh_boot_gov, up_s);
+		return;
+	}
+
+	/* Phase 2: the system is up; move to the governor we actually want. */
+	dsh_force_governor(dsh_default_gov, true);
 }
 
 static void dsh_gov_workfn(struct work_struct *work)
 {
-	unsigned long delay;
+	unsigned int next_ms;
 
 	if (!READ_ONCE(dsh_enforce))
 		goto rearm;
 
-	/*
-	 * hmbird's own knob wins when it asks for enforcement to stop, so
-	 * OPLUS userspace can hand control back to walt/schedutil.
-	 */
-	if (!READ_ONCE(scx_gov_ctrl))
-		goto rearm;
-
 	dsh_gov_check();
-	dsh_rounds++;
+
+	/*
+	 * While the boot guard is armed, look often: userspace writes its saved
+	 * governor within the first seconds of boot, and the window between that
+	 * write and our correction is exactly the time the boot would be running
+	 * on a governor that is not supposed to be there.  Once the window has
+	 * closed, a slow steady poll is enough.
+	 */
+	next_ms = (ktime_get_seconds() < dsh_boot_guard_s) ?
+		  DSH_GUARD_POLL_MS : DSH_STEADY_DELAY_MS;
+	schedule_delayed_work(&dsh_gov_work, msecs_to_jiffies(next_ms));
+	return;
 
 rearm:
-	/*
-	 * Re-check a few times while vendor init is still settling, then settle
-	 * into a slow steady poll so a stray userspace write cannot silently
-	 * take the port off its governor.
-	 */
-	if (dsh_rounds < DSH_BOOT_RETRIES)
-		delay = msecs_to_jiffies(DSH_FIRST_DELAY_MS);
-	else
-		delay = msecs_to_jiffies(DSH_STEADY_DELAY_MS);
-
-	schedule_delayed_work(&dsh_gov_work, delay);
+	schedule_delayed_work(&dsh_gov_work, msecs_to_jiffies(DSH_STEADY_DELAY_MS));
 }
 
 /* ---- /proc/dsh_gov/ -------------------------------------------------------- */
@@ -340,6 +341,7 @@ static int __init dsh_gov_enforce_init(void)
 
 	pr_info("dsh_gov: will keep governor '%s' selected (enforce=%d)\n",
 		dsh_default_gov, dsh_enforce ? 1 : 0);
+	pr_info("dsh_gov: autostart armed -- scx will be selected 20s after boot\n");
 	return 0;
 }
 late_initcall(dsh_gov_enforce_init);

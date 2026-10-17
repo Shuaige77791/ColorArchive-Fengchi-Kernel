@@ -348,3 +348,39 @@ causes trouble, that fact alone localises the fault.
 
 `boot_V31_failsafe_ksu.img` carries the full feature set plus the panic-on-hang
 command line, and CRC is unchanged (0 of 14675).
+
+---
+
+## V34: boot on walt, then move to scx
+
+This is the shape the port needs on this device, and it is enforced by the kernel
+rather than assumed:
+
+1. **The boot always runs on `walt`.**  Userspace restores its saved governor
+   early in boot, and if that saved value is `scx` then `scx` would be running
+   while the system is still coming up -- which is how the boot hang happened.
+   For the first `dsh_boot_guard_s` seconds (default 60) the kernel puts `walt`
+   back every second, so whatever is written, the boot runs on the governor that
+   is known to bring the device up.  The correction is a *successful* write, so
+   nothing fails and nothing retries.
+2. **After the window closes, `scx` is selected and kept.**  The enforcement work
+   switches every policy to `scx` and re-asserts it every 30 s, with the health
+   check from V22: if a policy refuses to switch three times, the original
+   governor is restored for that policy and enforcement stops for it.
+3. **The governor is active by default** (`dsh_gov_active = true`), so as soon as
+   it is selected it really drives frequency.  `echo 0 > /proc/dsh_fengchi/active`
+   makes it inert again at runtime.
+
+Knobs:
+
+    /proc/dsh_gov/stats      per-policy state, switches, failures
+    /proc/dsh_gov/enforce    1 = keep scx selected (default 1)
+    /proc/dsh_gov/default    which governor to enforce (default "scx")
+    /proc/dsh_fengchi/active 1 = governor drives frequency (default 1)
+
+The guard window is compile-time (`dsh_boot_guard_s`) and the poll is 1 s inside
+it and 30 s afterwards, so a userspace write of `scx` during boot is undone
+within about a second.
+
+`boot_V34_bootwalt_ksu.img` carries the full feature set and the panic-on-hang
+command line.  CRC: 14675 common symbols, 0 changed, 99.8% match vs stock.
