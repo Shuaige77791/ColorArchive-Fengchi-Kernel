@@ -60,7 +60,7 @@
  * The performance request for each CPU, in fengchi's 0..1024 domain.
  * Read by kernel/sched/dsh_fengchi_gov.c.
  */
-DEFINE_PER_CPU(u32, dsh_cpuperf_target);
+DECLARE_PER_CPU(u32, dsh_cpuperf_target);
 
 #define DSH_MAX_PERF		1024
 #define DSH_MAX_PIDS		32
@@ -93,7 +93,7 @@ static inline struct cpufreq_policy *dsh_gov_is_ours(unsigned int cpu)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get_raw(cpu);
 
-	if (!policy || !policy->governor || !policy->governor->name)
+	if (!policy || !policy->governor)
 		return NULL;
 	if (strcmp(policy->governor->name, "scx") &&
 	    strcmp(policy->governor->name, "sugov_ext"))

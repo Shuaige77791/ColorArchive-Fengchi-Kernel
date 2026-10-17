@@ -77,7 +77,7 @@
  * replacement for the vendor's rq->scx.cpuperf_target.  Zero means "no request",
  * in which case the governor falls back to measured utilisation.
  */
-DECLARE_PER_CPU(u32, dsh_cpuperf_target);
+DEFINE_PER_CPU(u32, dsh_cpuperf_target);
 #define DSH_DEFAULT_TARGET_LOAD		90
 #define DSH_MIN_TARGET_LOAD		1
 #define DSH_MAX_TARGET_LOAD		100

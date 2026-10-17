@@ -197,3 +197,31 @@ boot and 5 s later when it is selected during boot.
 So a device whose saved governor is `scx` boots exactly like one that saved
 `walt`: during boot the governor is registered and selected but provably does
 nothing.  That is the property the port was missing.
+
+---
+
+## Bisection images (to identify the boot hang exactly)
+
+Two minimal images, each carrying exactly one of the new components, so a single
+flash each settles which file is responsible.  Both were verified by reading the
+kernel back out of the packed image:
+
+| image | governor | dsh_unfair | hmbird_common | enforcer |
+|-------|----------|-----------|---------------|----------|
+| `boot_V26_governor_only_ksu.img`    | YES | no  | no  | no |
+| `boot_V27_hmbirdcommon_only_ksu.img`| no  | no  | YES | no |
+
+Read it this way:
+
+* **V26 boots**  -> the governor is not the problem; `dsh_hmbird_common.c`
+  (the only other thing that runs at boot) becomes the prime suspect, and V27
+  tests it directly.
+* **V26 hangs**  -> the governor is responsible, even though V25 makes it fully
+  inert during boot; that would point at registration rather than activation.
+* **V27 boots**  -> `dsh_hmbird_common.c` is clean.
+* **V27 hangs**  -> `register_sysctl("hmbird/common", ...)` at `late_initcall`
+  is the cause.
+
+Also fixed while preparing these: `dsh_fengchi_gov.c` and `dsh_unfair.c` were
+coupled -- the governor only declared `dsh_cpuperf_target` while `dsh_unfair.c`
+defined it, so the governor could not link on its own.  The owner now defines it.
